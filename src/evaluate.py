@@ -14,6 +14,8 @@ from sklearn.metrics import (
     cohen_kappa_score,
     confusion_matrix,
     f1_score,
+    precision_score,
+    recall_score,
     roc_auc_score,
     accuracy_score,
 )
@@ -69,6 +71,21 @@ def compute_metrics(
     metrics["qwk"] = quadratic_weighted_kappa(y_true, y_pred_classes)
     metrics["accuracy"] = accuracy_score(y_true, y_pred_classes)
     metrics["macro_f1"] = f1_score(y_true, y_pred_classes, average="macro", zero_division=0)
+    metrics["sensitivity"] = recall_score(y_true, y_pred_classes, average="macro", zero_division=0)
+
+    cm = confusion_matrix(y_true, y_pred_classes, labels=list(range(NUM_CLASSES)))
+    specificity_per_class = []
+    for c in range(NUM_CLASSES):
+        tp = cm[c, c]
+        fn = cm[c, :].sum() - tp
+        fp = cm[:, c].sum() - tp
+        tn = cm.sum() - tp - fn - fp
+        specificity_per_class.append(tn / (tn + fp) if (tn + fp) > 0 else 0.0)
+    metrics["specificity"] = float(np.mean(specificity_per_class))
+
+    per_class_f1 = f1_score(y_true, y_pred_classes, average=None, labels=list(range(NUM_CLASSES)), zero_division=0)
+    for i, name in enumerate(CLASS_NAMES):
+        metrics[f"f1_{name}"] = float(per_class_f1[i]) if i < len(per_class_f1) else 0.0
 
     if y_pred_probs is not None and y_pred_probs.ndim == 2:
         try:
