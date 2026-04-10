@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -96,8 +97,11 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
     n_batches = 0
+    num_batches = len(loader)
+    epoch_start = time.time()
 
-    for batch in loader:
+    for i, batch in enumerate(loader, 1):
+        iter_start = time.time()
         images, targets = batch[0].to(device), batch[1].to(device)
         sample_weights = batch[3].to(device) if len(batch) > 3 else None
 
@@ -127,6 +131,18 @@ def train_one_epoch(
         total_loss += loss.item()
         n_batches += 1
 
+        iter_time = time.time() - iter_start
+        avg_loss = total_loss / n_batches
+        elapsed = time.time() - epoch_start
+        eta = elapsed / i * (num_batches - i)
+        print(
+            f"\r  [{i}/{num_batches}] "
+            f"loss: {loss.item():.4f} | avg: {avg_loss:.4f} | "
+            f"iter: {iter_time:.2f}s | elapsed: {elapsed:.0f}s | ETA: {eta:.0f}s",
+            end="", flush=True,
+        )
+
+    print()  # newline after progress
     return total_loss / max(n_batches, 1)
 
 
@@ -194,6 +210,16 @@ def run_training(cfg: ExpConfig, train_loader: DataLoader, val_loader: DataLoade
         swa_model = AveragedModel(model).to(device)
 
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
+
+    if device.type == "cuda":
+        allocated = torch.cuda.memory_allocated(device) / 1024**3
+        reserved = torch.cuda.memory_reserved(device) / 1024**3
+        total = torch.cuda.get_device_properties(device).total_mem / 1024**3
+        logger.info(
+            f"VRAM before training — Total: {total:.2f} GB | "
+            f"Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB | "
+            f"Free (approx): {total - reserved:.2f} GB"
+        )
 
     for epoch in range(1, cfg.total_epochs + 1):
         if epoch == cfg.freeze_epochs + 1:
