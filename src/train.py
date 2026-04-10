@@ -214,7 +214,7 @@ def run_training(cfg: ExpConfig, train_loader: DataLoader, val_loader: DataLoade
     if device.type == "cuda":
         allocated = torch.cuda.memory_allocated(device) / 1024**3
         reserved = torch.cuda.memory_reserved(device) / 1024**3
-        total = torch.cuda.get_device_properties(device).total_mem / 1024**3
+        total = torch.cuda.get_device_properties(device).total_memory / 1024**3
         logger.info(
             f"VRAM before training — Total: {total:.2f} GB | "
             f"Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB | "
