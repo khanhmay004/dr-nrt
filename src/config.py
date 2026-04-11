@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT_DIR / "data"
+DATA_DIR = ROOT_DIR / "data" / "data_split"
 TRAIN_CSV = DATA_DIR / "train_label.csv"
 TEST_CSV = DATA_DIR / "test_label.csv"
 TRAIN_IMG_DIR = DATA_DIR / "train_split"
