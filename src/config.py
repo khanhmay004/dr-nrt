@@ -50,7 +50,7 @@ class ExpConfig:
     cutmix_alpha: float = 1.0
 
     # training
-    total_epochs: int = 100
+    total_epochs: int = 50
     freeze_epochs: int = 5
     batch_size: int = 32
     lr_head: float = 1e-3
@@ -123,14 +123,12 @@ EXPERIMENTS: dict[int, ExpConfig] = {
     5: ExpConfig(
         exp_id=5, name="mixup",
         aug_level=2, loss_type="focal", use_class_weights=True,
-        label_smoothing=0.1,
         use_mixup=True,
     ),
 
     6: ExpConfig(
         exp_id=6, name="cutmix",
         aug_level=2, loss_type="focal", use_class_weights=True,
-        label_smoothing=0.1,
         use_mixup=True, use_cutmix=True,
     ),
 

@@ -8,6 +8,7 @@ dist/
 build/
 docs/
 data/
+checkpoints/
 .venv/
 *.o
 *.so
