@@ -5,7 +5,7 @@
 # ==============================================================
 set -e  # exit on first failure
 
-LOGFILE="run_all.log"
+LOGFILE="run_5_7.log"
 
 echo "=============================================" | tee -a "$LOGFILE"
 echo " DR-NRT  —  Experiments 5 → 7  (batch run)" | tee -a "$LOGFILE"
@@ -25,9 +25,9 @@ echo " All experiments finished  —  $(date)"        | tee -a "$LOGFILE"
 echo " Archiving results ..."                        | tee -a "$LOGFILE"
 echo "=============================================" | tee -a "$LOGFILE"
 
-tar -czf /workspace/run_0_4.tar.gz results/ checkpoints/
-echo "Archive created: /workspace/run_0_4.tar.gz" | tee -a "$LOGFILE"
+tar -czf /workspace/run_5_7.tar.gz results/ checkpoints/
+echo "Archive created: /workspace/run_5_7.tar.gz" | tee -a "$LOGFILE"
 
 echo "Uploading to Google Drive ..." | tee -a "$LOGFILE"
-rclone copy /workspace/run_0_4.tar.gz gdrive:DR-Results-Exp -P
+rclone copy /workspace/run_5_7.tar.gz gdrive:DR-Results-Exp -P
 echo "Upload complete  —  $(date)" | tee -a "$LOGFILE"
