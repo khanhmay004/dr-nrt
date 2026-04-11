@@ -8,11 +8,11 @@ set -e  # exit on first failure
 LOGFILE="run_all.log"
 
 echo "=============================================" | tee -a "$LOGFILE"
-echo " DR-NRT  —  Experiments 2 → 14  (batch run)" | tee -a "$LOGFILE"
+echo " DR-NRT  —  Experiments 5 → 7  (batch run)" | tee -a "$LOGFILE"
 echo " Started: $(date)"                             | tee -a "$LOGFILE"
 echo "=============================================" | tee -a "$LOGFILE"
 
-for EXP in $(seq 5 14); do
+for EXP in $(seq 5 7); do
     echo "" | tee -a "$LOGFILE"
     echo ">>> Experiment $EXP  —  $(date)" | tee -a "$LOGFILE"
     python run_experiment.py --exp "$EXP" 2>&1 | tee -a "$LOGFILE"
