@@ -266,7 +266,7 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         contrastive_temperature=0.07,
         contrastive_proj_dim=128,
         contrastive_data="aptos",
-        total_epochs=100,
+        total_epochs=60,
     ),
 }
 
