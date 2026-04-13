@@ -30,6 +30,98 @@ from src.tta import predict_no_tta, predict_with_tta
 logger = logging.getLogger(__name__)
 
 
+def run_contrastive_pretraining(
+    cfg: ExpConfig,
+    contrastive_loader: DataLoader,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    """Run ordinal contrastive pre-training. Returns backbone state_dict (no projector)."""
+    from src.models import build_contrastive_model
+    from src.losses import OrdSupConLoss
+
+    backbone, projector = build_contrastive_model(cfg)
+    backbone = backbone.to(device)
+    projector = projector.to(device)
+
+    criterion = OrdSupConLoss(
+        num_classes=NUM_CLASSES,
+        temperature=cfg.contrastive_temperature,
+    )
+
+    all_params = list(backbone.parameters()) + list(projector.parameters())
+    optimizer = torch.optim.Adam(all_params, lr=cfg.contrastive_lr, weight_decay=cfg.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg.contrastive_epochs, eta_min=1e-6,
+    )
+
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
+
+    cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
+    cfg.results_dir.mkdir(parents=True, exist_ok=True)
+    log_path = cfg.results_dir / f"{cfg.exp_name}_contrastive_log.csv"
+    log_rows: list[dict[str, float]] = []
+
+    logger.info(f"Starting contrastive pre-training for {cfg.contrastive_epochs} epochs")
+
+    for epoch in range(1, cfg.contrastive_epochs + 1):
+        backbone.train()
+        projector.train()
+        total_loss = 0.0
+        total_samples = 0
+
+        pbar = tqdm(
+            contrastive_loader,
+            desc=f"Contrastive Epoch {epoch}/{cfg.contrastive_epochs}",
+            leave=True,
+        )
+        for batch in pbar:
+            view1, view2, targets, _codes = batch
+            view1 = view1.to(device)
+            view2 = view2.to(device)
+            targets = targets.to(device)
+
+            # Concatenate both views: [2N, C, H, W]
+            images = torch.cat([view1, view2], dim=0)
+            labels = torch.cat([targets, targets], dim=0)
+
+            optimizer.zero_grad()
+
+            if scaler is not None:
+                with torch.amp.autocast("cuda"):
+                    features = backbone(images)  # [2N, 2048]
+                # Compute projection + loss in FP32 for numerical stability
+                features = features.float()
+                z = projector(features)
+                loss = criterion(z, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                features = backbone(images)
+                z = projector(features)
+                loss = criterion(z, labels)
+                loss.backward()
+                optimizer.step()
+
+            total_loss += loss.item() * view1.size(0)
+            total_samples += view1.size(0)
+            pbar.set_postfix(loss=f"{total_loss / total_samples:.4f}")
+
+        scheduler.step()
+        avg_loss = total_loss / max(total_samples, 1)
+        lr = optimizer.param_groups[0]["lr"]
+        log_rows.append({"epoch": epoch, "contrastive_loss": round(avg_loss, 6), "lr": lr})
+
+        print(f"\nContrastive Epoch {epoch}/{cfg.contrastive_epochs}  loss: {avg_loss:.4f}  lr: {lr:.2e}")
+
+    # Save contrastive log
+    pd.DataFrame(log_rows).to_csv(log_path, index=False)
+
+    # Return only backbone state_dict (discard projector)
+    logger.info("Contrastive pre-training complete. Returning backbone weights (projector discarded).")
+    return backbone.state_dict()
+
+
 def mixup_data(
     x: torch.Tensor,
     y: torch.Tensor,
@@ -208,8 +300,29 @@ def validate(
     return val_loss, val_acc, metrics
 
 
-def run_training(cfg: ExpConfig, train_loader: DataLoader, val_loader: DataLoader, device: torch.device) -> nn.Module:
+def run_training(
+    cfg: ExpConfig,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    pretrained_backbone_sd: dict[str, torch.Tensor] | None = None,
+) -> nn.Module:
     model = build_model(cfg).to(device)
+
+    # Load pre-trained backbone weights (e.g., from contrastive pre-training)
+    if pretrained_backbone_sd is not None:
+        # The contrastive backbone has fc=Identity, but build_model sets fc=Linear.
+        # Load matching keys only (skip fc).
+        missing, unexpected = model.load_state_dict(pretrained_backbone_sd, strict=False)
+        backbone_missing = [k for k in missing if not k.startswith("fc")]
+        if backbone_missing:
+            logger.warning(f"Unexpected missing backbone keys: {backbone_missing}")
+        assert len(unexpected) == 0, f"Unexpected keys in state_dict: {unexpected}"
+        logger.info(
+            f"Loaded pretrained backbone — missing: {len(missing)} keys, "
+            f"unexpected: {len(unexpected)} keys"
+        )
+
     criterion = build_loss(cfg, device)
 
     freeze_backbone(model, cfg.backbone)
@@ -361,7 +474,12 @@ def evaluate_on_test(
         pred_classes = raw_preds.argmax(axis=1) if raw_preds.ndim == 2 else raw_preds
         targets_int = targets.astype(int)
 
-    metrics = compute_metrics(targets_int, pred_classes)
+    y_pred_probs = None
+    if not cfg.is_regression and raw_preds.ndim == 2:
+        from scipy.special import softmax as sp_softmax
+        y_pred_probs = sp_softmax(raw_preds, axis=1)
+
+    metrics = compute_metrics(targets_int, pred_classes, y_pred_probs)
 
     save_confusion_matrix(
         targets_int, pred_classes,

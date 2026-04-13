@@ -70,3 +70,50 @@ def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
         return nn.SmoothL1Loss()
 
     raise ValueError(f"Unknown loss type: {cfg.loss_type}")
+
+
+class OrdSupConLoss(nn.Module):
+    """Ordinal-Aware Supervised Contrastive Loss.
+
+    W(i,j) = 1 - |g_i - g_j| / (K - 1).  K = num_classes.
+    """
+
+    def __init__(self, num_classes: int = 5, temperature: float = 0.07) -> None:
+        super().__init__()
+        self.temperature = temperature
+        self.num_classes = num_classes
+
+    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            features: L2-normalised embeddings [2N, D] (two views concatenated).
+            labels:   integer labels [2N].
+        """
+        device = features.device
+        batch_size = features.shape[0]
+
+        # Pairwise ordinal weight: W(i,j) = 1 - |g_i - g_j| / (K-1)
+        labels_f = labels.float()
+        dist = (labels_f.unsqueeze(0) - labels_f.unsqueeze(1)).abs()
+        W = 1.0 - dist / (self.num_classes - 1)  # [2N, 2N]
+
+        # Cosine similarity (features already L2-normalised)
+        sim = torch.mm(features, features.t()) / self.temperature  # [2N, 2N]
+
+        # Mask out self-similarities
+        self_mask = torch.eye(batch_size, dtype=torch.bool, device=device)
+        sim.masked_fill_(self_mask, -1e9)
+
+        # Log-softmax over the denominator (all negatives + positives)
+        log_prob = sim - torch.logsumexp(sim, dim=1, keepdim=True)
+
+        # Weight the log-probabilities and mask out self
+        W_masked = W.clone()
+        W_masked.masked_fill_(self_mask, 0.0)
+
+        # Per-anchor normalisation Z_i = sum_{j!=i} W(i,j)
+        Z = W_masked.sum(dim=1, keepdim=True).clamp(min=1e-8)
+
+        # Clamp log_prob to prevent 0 * (-inf) = NaN when W=0 for distant grades
+        loss = -(W_masked * log_prob.clamp(min=-100)).sum(dim=1) / Z.squeeze(1)
+        return loss.mean()

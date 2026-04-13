@@ -23,6 +23,28 @@ from sklearn.metrics import (
 from src.config import CLASS_NAMES, NUM_CLASSES
 
 
+def compute_ece(
+    probs: np.ndarray,
+    targets: np.ndarray,
+    n_bins: int = 15,
+) -> float:
+    """Expected Calibration Error with equal-width confidence bins."""
+    confidences = probs.max(axis=1)
+    predictions = probs.argmax(axis=1)
+    accuracies = (predictions == targets).astype(float)
+
+    bin_boundaries = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for i in range(n_bins):
+        mask = (confidences > bin_boundaries[i]) & (confidences <= bin_boundaries[i + 1])
+        if mask.sum() == 0:
+            continue
+        bin_acc = accuracies[mask].mean()
+        bin_conf = confidences[mask].mean()
+        ece += mask.sum() * abs(bin_acc - bin_conf)
+    return float(ece / len(targets))
+
+
 def quadratic_weighted_kappa(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return cohen_kappa_score(y_true, y_pred, weights="quadratic")
 
@@ -94,6 +116,7 @@ def compute_metrics(
             )
         except ValueError:
             metrics["auc_roc"] = 0.0
+        metrics["ece"] = compute_ece(y_pred_probs, y_true)
 
     return metrics
 

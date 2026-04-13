@@ -8,9 +8,9 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.config import get_config
-from src.dataset import build_datasets
+from src.dataset import build_datasets, ContrastiveDRDataset
 from src.transforms import get_train_transform, get_val_transform
-from src.train import run_training, evaluate_on_test
+from src.train import run_training, evaluate_on_test, run_contrastive_pretraining
 from src.pseudo_label import generate_pseudo_labels, finetune_with_pseudo
 from src.ensemble import build_ensemble_configs, run_ensemble_inference
 from src.models import build_model
@@ -36,7 +36,7 @@ def _add_file_logger(exp_name: str, results_dir) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="DR-NRT Experiment Runner")
-    parser.add_argument("--exp", type=int, required=True, help="Experiment ID (0-14)")
+    parser.add_argument("--exp", type=int, required=True, help="Experiment ID")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--workers", type=int, default=4, help="DataLoader workers")
     args = parser.parse_args()
@@ -58,8 +58,47 @@ def main() -> None:
     train_ds, val_ds, test_ds = build_datasets(cfg, transform_train, transform_val)
     logger.info(f"Dataset sizes — Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
 
+    # --- A0: eval-only (load checkpoint, no training) ---
+    if cfg.load_checkpoint and not cfg.use_contrastive_pretrain:
+        import torch as _torch
+        model = build_model(cfg).to(device)
+        model.load_state_dict(_torch.load(cfg.load_checkpoint, weights_only=True))
+        logger.info(f"Loaded checkpoint: {cfg.load_checkpoint}")
+
+        test_loader = DataLoader(
+            test_ds, batch_size=cfg.batch_size, shuffle=False,
+            num_workers=args.workers, pin_memory=True,
+        )
+        val_loader = DataLoader(
+            val_ds, batch_size=cfg.batch_size, shuffle=False,
+            num_workers=args.workers, pin_memory=True,
+        )
+        metrics = evaluate_on_test(
+            model, test_ds, test_loader, cfg, device,
+            val_loader=val_loader if cfg.use_optimized_thresholds else None,
+        )
+        logger.info(f"=== Experiment {cfg.exp_name} Complete (eval only) ===")
+        for k, v in metrics.items():
+            logger.info(f"  {k}: {v:.4f}")
+        return
+
+    # --- Build DataLoaders ---
+    sampler = None
+    shuffle_train = True
+    if cfg.use_weighted_sampler:
+        from torch.utils.data import WeightedRandomSampler
+        targets = [s[1] for s in train_ds.samples]
+        class_counts = [0] * 5
+        for t in targets:
+            class_counts[t] += 1
+        weights = [1.0 / class_counts[t] for t in targets]
+        sampler = WeightedRandomSampler(weights, num_samples=len(targets), replacement=True)
+        shuffle_train = False
+        logger.info(f"Using WeightedRandomSampler — class counts: {class_counts}")
+
     train_loader = DataLoader(
-        train_ds, batch_size=cfg.batch_size, shuffle=True,
+        train_ds, batch_size=cfg.batch_size, shuffle=shuffle_train,
+        sampler=sampler,
         num_workers=args.workers, pin_memory=True,
     )
     val_loader = DataLoader(
@@ -71,7 +110,31 @@ def main() -> None:
         num_workers=args.workers, pin_memory=True,
     )
 
-    model = run_training(cfg, train_loader, val_loader, device)
+    # --- A1: Contrastive pre-training → supervised fine-tuning ---
+    pretrained_backbone_sd = None
+    if cfg.use_contrastive_pretrain:
+        contrastive_ds = ContrastiveDRDataset(train_ds, transform_train)
+
+        contrastive_sampler = None
+        contrastive_shuffle = True
+        if cfg.use_weighted_sampler:
+            from torch.utils.data import WeightedRandomSampler as WRS
+            c_targets = [s[1] for s in contrastive_ds.base_dataset.samples]
+            c_counts = [0] * 5
+            for t in c_targets:
+                c_counts[t] += 1
+            c_weights = [1.0 / c_counts[t] for t in c_targets]
+            contrastive_sampler = WRS(c_weights, num_samples=len(c_targets), replacement=True)
+            contrastive_shuffle = False
+
+        contrastive_loader = DataLoader(
+            contrastive_ds, batch_size=cfg.batch_size,
+            shuffle=contrastive_shuffle, sampler=contrastive_sampler,
+            num_workers=args.workers, pin_memory=True,
+        )
+        pretrained_backbone_sd = run_contrastive_pretraining(cfg, contrastive_loader, device)
+
+    model = run_training(cfg, train_loader, val_loader, device, pretrained_backbone_sd)
 
     if cfg.use_pseudo_labels:
         pseudo_labels = generate_pseudo_labels(model, test_ds, test_loader, cfg, device)

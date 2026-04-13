@@ -21,6 +21,27 @@ class GeM(nn.Module):
         ).pow(1.0 / self.p)
 
 
+class ProjectionHead(nn.Module):
+    """MLP projection head for contrastive learning.
+
+    Linear(in_dim -> hidden) -> BN -> ReLU -> Linear(hidden -> out_dim) -> L2-normalize.
+    """
+
+    def __init__(self, in_dim: int = 2048, hidden_dim: int = 512, out_dim: int = 128) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim, bias=False),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim, bias=False),
+            nn.BatchNorm1d(out_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z = self.net(x)
+        return F.normalize(z, dim=1)
+
+
 def build_model(cfg: ExpConfig) -> nn.Module:
     if cfg.backbone == "resnet50":
         model = _build_resnet50(cfg)
@@ -84,3 +105,22 @@ def freeze_backbone(model: nn.Module, backbone: str) -> None:
 def unfreeze_all(model: nn.Module) -> None:
     for param in model.parameters():
         param.requires_grad = True
+
+
+def build_contrastive_model(cfg: ExpConfig) -> tuple[nn.Module, ProjectionHead]:
+    """Build backbone (with fc=Identity) + projection head for contrastive pre-training."""
+    weights = tvm.ResNet50_Weights.IMAGENET1K_V2
+    model = tvm.resnet50(weights=weights)
+
+    if cfg.use_gem:
+        model.avgpool = GeM(p=cfg.gem_p)
+
+    in_features = model.fc.in_features  # 2048
+    model.fc = nn.Identity()
+
+    projector = ProjectionHead(
+        in_dim=in_features,
+        hidden_dim=512,
+        out_dim=cfg.contrastive_proj_dim,
+    )
+    return model, projector

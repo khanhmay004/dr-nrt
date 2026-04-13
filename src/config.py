@@ -85,6 +85,25 @@ class ExpConfig:
     val_ratio: float = 0.15
     seed: int = 42
 
+    # sampling
+    use_weighted_sampler: bool = False
+
+    # offline oversampling
+    oversample_target: int = 0  # 0 = disabled; >0 = target count per class
+    oversample_dir: str = ""  # path to oversampled images folder
+
+    # contrastive pre-training
+    use_contrastive_pretrain: bool = False
+    contrastive_epochs: int = 50
+    contrastive_lr: float = 1e-3
+    contrastive_temperature: float = 0.07
+    contrastive_proj_dim: int = 128
+    contrastive_data: str = "aptos"  # aptos | eyepacs
+    eyepacs_dir: str = ""
+
+    # checkpoint to load backbone from (for eval-only or contrastive init)
+    load_checkpoint: str = ""
+
     @property
     def is_regression(self) -> bool:
         return self.num_outputs == 1
@@ -206,6 +225,48 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         use_tta=True,
         use_optimized_thresholds=True,
         use_pseudo_labels=True,
+    ),
+
+    # === Phase A: Ordinal Contrastive Experiments (docs/03-ordinal-supcon.md) ===
+
+    # A0: Exp 8 baseline + ECE (eval only — load checkpoint)
+    100: ExpConfig(
+        exp_id=100, name="a0_baseline_ece",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        load_checkpoint=str(CHECKPOINT_DIR / "exp08_gem" / "exp08_gem_best.pth"),
+    ),
+
+    # A0b: Exp 8 + WeightedRandomSampler
+    101: ExpConfig(
+        exp_id=101, name="a0b_weighted_sampler",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        use_weighted_sampler=True,
+    ),
+
+    # A0c: Exp 8 + Offline Oversampling (target 1000 per class)
+    102: ExpConfig(
+        exp_id=102, name="a0c_offline_oversample",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # A1: OrdSupCon pre-train on APTOS → fine-tune on APTOS (100 epochs total)
+    103: ExpConfig(
+        exp_id=103, name="a1_ordsupcon_aptos",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        use_weighted_sampler=True,
+        use_contrastive_pretrain=True,
+        contrastive_epochs=50,
+        contrastive_lr=1e-3,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+        contrastive_data="aptos",
+        total_epochs=100,
     ),
 }
 

@@ -55,8 +55,10 @@ class DRDataset(Dataset):
         img_dir: Path,
         transform: object | None = None,
         is_regression: bool = False,
+        extra_img_dir: Path | None = None,
     ) -> None:
         self.img_dir = img_dir
+        self.extra_img_dir = extra_img_dir
         self.transform = transform
         self.is_regression = is_regression
 
@@ -65,6 +67,10 @@ class DRDataset(Dataset):
             img_path = img_dir / f"{code}.png"
             if img_path.exists():
                 self.samples.append((code, labels[code]))
+            elif extra_img_dir is not None:
+                img_path_extra = extra_img_dir / f"{code}.png"
+                if img_path_extra.exists():
+                    self.samples.append((code, labels[code]))
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -72,6 +78,8 @@ class DRDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
         code, label = self.samples[idx]
         img_path = self.img_dir / f"{code}.png"
+        if not img_path.exists() and self.extra_img_dir is not None:
+            img_path = self.extra_img_dir / f"{code}.png"
 
         image = cv2.imread(str(img_path))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -150,6 +158,41 @@ class PseudoLabelDataset(Dataset):
         return image_t, target, code, self.pseudo_weight
 
 
+class ContrastiveDRDataset(Dataset):
+    """Wraps a DRDataset to produce two augmented views per image for contrastive learning."""
+
+    def __init__(self, base_dataset: DRDataset, transform: object) -> None:
+        self.base_dataset = base_dataset
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]:
+        code, label = self.base_dataset.samples[idx]
+        img_path = self.base_dataset.img_dir / f"{code}.png"
+        if not img_path.exists() and self.base_dataset.extra_img_dir is not None:
+            img_path = self.base_dataset.extra_img_dir / f"{code}.png"
+
+        image = cv2.imread(str(img_path))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = ben_graham_preprocess(image, IMAGE_SIZE)
+
+        # Two independent augmented views
+        view1 = self._to_tensor(self.transform(image=image)["image"])
+        view2 = self._to_tensor(self.transform(image=image)["image"])
+
+        target = torch.tensor(label, dtype=torch.long)
+        return view1, view2, target, code
+
+    @staticmethod
+    def _to_tensor(image: np.ndarray) -> torch.Tensor:
+        t = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
+        for c in range(3):
+            t[c] = (t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
+        return t
+
+
 def build_datasets(
     cfg: ExpConfig,
     transform_train: object | None = None,
@@ -170,9 +213,25 @@ def build_datasets(
         random_state=cfg.seed,
     )
 
+    # If offline oversampling is enabled, add oversampled image codes
+    oversample_codes: list[str] = []
+    if cfg.oversample_target > 0 and cfg.oversample_dir:
+        oversample_path = Path(cfg.oversample_dir)
+        if oversample_path.exists():
+            for img_file in oversample_path.glob("*.png"):
+                code = img_file.stem
+                # Oversampled files encode original label in filename: {orig_code}_aug{N}_{label}
+                parts = code.rsplit("_", 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    label = int(parts[1])
+                    train_labels[code] = label
+                    oversample_codes.append(code)
+
     train_ds = DRDataset(
-        train_codes, train_labels, TRAIN_IMG_DIR,
+        train_codes + oversample_codes, train_labels,
+        TRAIN_IMG_DIR if not oversample_codes else TRAIN_IMG_DIR,
         transform=transform_train, is_regression=cfg.is_regression,
+        extra_img_dir=Path(cfg.oversample_dir) if oversample_codes else None,
     )
     val_ds = DRDataset(
         val_codes, train_labels, TRAIN_IMG_DIR,
