@@ -178,14 +178,13 @@ EXPERIMENTS: dict[int, ExpConfig] = {
     ),
 
     12: ExpConfig(
-        exp_id=12, name="opt_thresh",
+        exp_id=12, name="opt_thresh_opA",
+        # Option A: Exp 7 (regression) + threshold optimisation only.
+        # Branch point: exp07_regression checkpoint.
+        # No GeM / cosine LR / SWA / TTA — isolates threshold gain alone.
         aug_level=2, loss_type="smoothl1",
         num_outputs=1,
         use_mixup=True, use_cutmix=True,
-        use_gem=True,
-        scheduler="cosine",
-        use_swa=True,
-        use_tta=True,
         use_optimized_thresholds=True,
     ),
 
