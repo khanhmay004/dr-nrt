@@ -4,7 +4,6 @@
 
 set -euo pipefail
 
-PYTHON=".venv/Scripts/python"
 
 echo "====================================================="
 echo "  Phase A: Ordinal Contrastive Experiments"
