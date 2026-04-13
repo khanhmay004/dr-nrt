@@ -23,23 +23,23 @@ fi
 if [ "$SKIP_A0" = false ]; then
     echo ""
     echo "─── [A0]  Exp 100 — Baseline ECE (eval only) ───────────────"
-    "$PYTHON" run_experiment.py --exp 100
+    python run_experiment.py --exp 100
     echo "    Done: $(date)"
 fi
 
 # ── A0b: WeightedRandomSampler ───────────────────────────────────────────────
 echo ""
 echo "─── [A0b] Exp 101 — Weighted Random Sampler (50 epochs) ────────"
-"$PYTHON" run_experiment.py --exp 101
+python run_experiment.py --exp 101
 echo "    Done: $(date)"
 
 # ── A0c: Offline oversample → train ─────────────────────────────────────────
 echo ""
 echo "─── [A0c] Generating oversampled images (target=1000) ──────────"
-"$PYTHON" scripts/offline_oversample.py
+python scripts/offline_oversample.py
 echo ""
 echo "─── [A0c] Exp 102 — Offline Oversample training (50 epochs) ────"
-"$PYTHON" run_experiment.py --exp 102
+python run_experiment.py --exp 102
 echo "    Done: $(date)"
 
 # ── A1: OrdSupCon pre-train + fine-tune ─────────────────────────────────────
@@ -47,7 +47,7 @@ echo ""
 echo "─── [A1]  Exp 103 — OrdSupCon APTOS ────────────────────────────"
 echo "          Stage 1: 50 contrastive epochs"
 echo "          Stage 2: 60 fine-tuning epochs"
-"$PYTHON" run_experiment.py --exp 103
+python run_experiment.py --exp 103
 echo "    Done: $(date)"
 
 echo ""
