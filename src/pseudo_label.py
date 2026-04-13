@@ -29,7 +29,11 @@ def generate_pseudo_labels(
 
     pseudo_labels: dict[str, float] = {}
     for code, pred in zip(codes, raw_preds):
-        pseudo_labels[code] = float(pred)
+        if cfg.is_regression:
+            pseudo_labels[code] = float(pred)
+        else:
+            # raw_preds is shape [N, num_classes]; take argmax as hard label
+            pseudo_labels[code] = float(int(np.argmax(pred)))
 
     logger.info(f"Generated pseudo labels for {len(pseudo_labels)} test images")
     return pseudo_labels
@@ -52,6 +56,7 @@ def finetune_with_pseudo(
         pseudo_img_dir=TEST_IMG_DIR,
         transform=transform,
         pseudo_weight=cfg.pseudo_weight,
+        is_regression=cfg.is_regression,
     )
 
     loader = DataLoader(
@@ -82,7 +87,7 @@ def finetune_with_pseudo(
                 )
             else:
                 loss_per_sample = torch.nn.functional.cross_entropy(
-                    outputs, targets, reduction="none",
+                    outputs, targets.long(), reduction="none",
                 )
 
             loss = (loss_per_sample * weights).mean()

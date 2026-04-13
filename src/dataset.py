@@ -102,11 +102,13 @@ class PseudoLabelDataset(Dataset):
         pseudo_img_dir: Path,
         transform: object | None = None,
         pseudo_weight: float = 0.5,
+        is_regression: bool = False,
     ) -> None:
         self.real_dataset = real_dataset
         self.pseudo_weight = pseudo_weight
         self.pseudo_img_dir = pseudo_img_dir
         self.transform = transform
+        self.is_regression = is_regression
 
         self.pseudo_samples: list[tuple[str, float]] = []
         for code in pseudo_codes:
@@ -143,7 +145,8 @@ class PseudoLabelDataset(Dataset):
         for c in range(3):
             image_t[c] = (image_t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
 
-        target = torch.tensor(soft_label, dtype=torch.float32)
+        target = torch.tensor(soft_label, dtype=torch.float32) if self.is_regression \
+            else torch.tensor(int(soft_label), dtype=torch.long)
         return image_t, target, code, self.pseudo_weight
 
 

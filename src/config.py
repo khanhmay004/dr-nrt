@@ -141,17 +141,15 @@ EXPERIMENTS: dict[int, ExpConfig] = {
 
     8: ExpConfig(
         exp_id=8, name="gem",
-        aug_level=2, loss_type="smoothl1",
-        num_outputs=1,
-        use_mixup=True, use_cutmix=True,
+        # Branched from Exp 3 (focal loss, classification). Adds GeM pooling.
+        aug_level=2, loss_type="focal", use_class_weights=True,
         use_gem=True,
     ),
 
     9: ExpConfig(
         exp_id=9, name="cosine_lr",
-        aug_level=2, loss_type="smoothl1",
-        num_outputs=1,
-        use_mixup=True, use_cutmix=True,
+        # Exp 8 + cosine annealing LR scheduler.
+        aug_level=2, loss_type="focal", use_class_weights=True,
         use_gem=True,
         scheduler="cosine",
     ),
@@ -190,14 +188,10 @@ EXPERIMENTS: dict[int, ExpConfig] = {
 
     13: ExpConfig(
         exp_id=13, name="pseudo_label",
-        aug_level=2, loss_type="smoothl1",
-        num_outputs=1,
-        use_mixup=True, use_cutmix=True,
+        # Exp 9 + pseudo-labeling. Classification, focal loss, no regression.
+        aug_level=2, loss_type="focal", use_class_weights=True,
         use_gem=True,
         scheduler="cosine",
-        use_swa=True,
-        use_tta=True,
-        use_optimized_thresholds=True,
         use_pseudo_labels=True,
     ),
 

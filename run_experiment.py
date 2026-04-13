@@ -23,6 +23,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _add_file_logger(exp_name: str, results_dir) -> None:
+    """Save full run output to results/<exp>/<exp>.log automatically."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    log_path = results_dir / f"{exp_name}.log"
+    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logging.getLogger().addHandler(fh)
+    logger.info(f"Logging to {log_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="DR-NRT Experiment Runner")
     parser.add_argument("--exp", type=int, required=True, help="Experiment ID (0-14)")
@@ -35,6 +46,7 @@ def main() -> None:
 
     cfg = get_config(args.exp)
     logger.info(f"Running experiment {cfg.exp_name}")
+    _add_file_logger(cfg.exp_name, cfg.results_dir)
 
     if args.exp == 14:
         _run_ensemble(cfg, device, args.workers)
