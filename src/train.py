@@ -117,6 +117,12 @@ def run_contrastive_pretraining(
     # Save contrastive log
     pd.DataFrame(log_rows).to_csv(log_path, index=False)
 
+    # Save backbone-only checkpoint (projector discarded — not needed for fine-tuning or analysis)
+    backbone_ckpt_path = cfg.ckpt_dir / f"{cfg.exp_name}_backbone.pth"
+    torch.save(backbone.state_dict(), backbone_ckpt_path)
+    logger.info(f"Backbone checkpoint saved: {backbone_ckpt_path}")
+    print(f"Backbone checkpoint saved: {backbone_ckpt_path}")
+
     # Return only backbone state_dict (discard projector)
     logger.info("Contrastive pre-training complete. Returning backbone weights (projector discarded).")
     return backbone.state_dict()
