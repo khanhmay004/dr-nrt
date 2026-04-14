@@ -105,6 +105,9 @@ class ExpConfig:
     # checkpoint to load backbone from (for eval-only or contrastive init)
     load_checkpoint: str = ""
 
+    # pre-trained backbone to load for fine-tuning (skip contrastive Stage 1)
+    load_backbone: str = ""
+
     @property
     def is_regression(self) -> bool:
         return self.num_outputs == 1
@@ -291,6 +294,21 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         eyepacs_csv=str(ROOT_DIR / "data" / "eyepacs_processed" / "eyepacs_labels.csv"),
         total_epochs=60,
         freeze_epochs=2,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # A2-v2: Reuse A2 EyePACS backbone, retrain fine-tune with freeze_epochs=5
+    # Tests hypothesis: domain gap is a BN re-calibration issue
+    201: ExpConfig(
+        exp_id=201, name="a2v2_freeze5_eyepacs",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        total_epochs=60,
+        freeze_epochs=5,
         oversample_target=1000,
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),

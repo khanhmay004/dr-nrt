@@ -147,6 +147,9 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.empty_cache()
             logger.info("Cleared VRAM after contrastive pre-training")
+    elif cfg.load_backbone:
+        pretrained_backbone_sd = torch.load(cfg.load_backbone, weights_only=True)
+        logger.info(f"Loaded backbone from {cfg.load_backbone}")
 
     model = run_training(cfg, train_loader, val_loader, device, pretrained_backbone_sd)
 
