@@ -10,6 +10,7 @@ docs/
 data/
 checkpoints/
 results/
+Eyepacs/
 .venv/
 *.o
 *.so
