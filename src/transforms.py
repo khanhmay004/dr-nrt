@@ -39,6 +39,32 @@ def get_train_transform(aug_level: int) -> A.Compose | None:
     return A.Compose(base)
 
 
+def get_offline_oversample_transform() -> A.Compose:
+    """Level 1.5: DR-safe augmentation for offline oversampling.
+
+    Keeps spatial + color transforms and mild CLAHE/blur.
+    Drops CoarseDropout, ElasticTransform, GridDistortion that can
+    destroy diagnostic pathology (microaneurysms, hemorrhages, vessels).
+    """
+    return A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+        A.ShiftScaleRotate(
+            shift_limit=0.1, scale_limit=0.15, rotate_limit=180, p=0.5,
+            border_mode=0,
+        ),
+        A.RandomBrightnessContrast(
+            brightness_limit=0.2, contrast_limit=0.2, p=0.5,
+        ),
+        A.HueSaturationValue(
+            hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=20, p=0.5,
+        ),
+        A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
+        A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+    ])
+
+
 def get_val_transform() -> None:
     return None
 

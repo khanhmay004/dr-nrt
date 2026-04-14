@@ -245,7 +245,7 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         use_weighted_sampler=True,
     ),
 
-    # A0c: Exp 8 + Offline Oversampling (target 1000 per class)
+    # A0c-v2: Exp 8 + Offline Oversampling (target 1000, Level 1.5 aug)
     102: ExpConfig(
         exp_id=102, name="a0c_offline_oversample",
         aug_level=2, loss_type="focal", use_class_weights=True,
@@ -254,19 +254,23 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),
 
-    # A1: OrdSupCon pre-train on APTOS → fine-tune on APTOS (100 epochs total)
+    # A1-v2: OrdSupCon pre-train on APTOS → fine-tune on APTOS
+    # Fixes vs v1: offline oversample instead of WRS, 30 contrastive epochs,
+    # freeze_epochs=2, VRAM cleared between stages
     103: ExpConfig(
         exp_id=103, name="a1_ordsupcon_aptos",
         aug_level=2, loss_type="focal", use_class_weights=True,
         use_gem=True,
-        use_weighted_sampler=True,
         use_contrastive_pretrain=True,
-        contrastive_epochs=50,
+        contrastive_epochs=30,
         contrastive_lr=1e-3,
         contrastive_temperature=0.07,
         contrastive_proj_dim=128,
         contrastive_data="aptos",
         total_epochs=60,
+        freeze_epochs=2,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),
 }
 

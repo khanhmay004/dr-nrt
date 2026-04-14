@@ -1,57 +1,39 @@
 #!/bin/bash
-# run_phase_subA.sh — Run all Phase A experiments sequentially.
+# run_phase_subA.sh — Re-run A0c (Level 1.5 oversample) + A1-v2 (fixed contrastive).
 # Execute from project root: bash run_phase_subA.sh
 
 set -euo pipefail
 
 
 echo "====================================================="
-echo "  Phase A: Ordinal Contrastive Experiments"
+echo "  Phase A v2: A0c + A1 re-run with fixes"
 echo "  Started: $(date)"
 echo "====================================================="
 
-# Sanity: verify exp08 checkpoint exists for A0
-EXP08_CKPT="checkpoints/exp08_gem/exp08_gem_best.pth"
-if [ ! -f "$EXP08_CKPT" ]; then
-    echo "WARNING: $EXP08_CKPT not found — skipping A0 (eval-only)"
-    SKIP_A0=true
-else
-    SKIP_A0=false
-fi
-
-# ── A0: Eval-only — load Exp 8, report ECE ──────────────────────────────────
-if [ "$SKIP_A0" = false ]; then
-    echo ""
-    echo "─── [A0]  Exp 100 — Baseline ECE (eval only) ───────────────"
-    python run_experiment.py --exp 100
-    echo "    Done: $(date)"
-fi
-
-# ── A0b: WeightedRandomSampler ───────────────────────────────────────────────
+# ── Step 1: Regenerate oversampled images with Level 1.5 aug ────────────────
 echo ""
-echo "─── [A0b] Exp 101 — Weighted Random Sampler (50 epochs) ────────"
-python run_experiment.py --exp 101
+echo "─── Clearing old oversampled images ─────────────────────────────"
+rm -rf data/train_oversampled
+echo "─── Generating oversampled images (Level 1.5, target=1000) ──────"
+python scripts/offline_oversample.py
 echo "    Done: $(date)"
 
-# ── A0c: Offline oversample → train ─────────────────────────────────────────
+# ── A0c-v2: Train with Level 1.5 oversampled data ──────────────────────────
 echo ""
-echo "─── [A0c] Generating oversampled images (target=1000) ──────────"
-python scripts/offline_oversample.py
-echo ""
-echo "─── [A0c] Exp 102 — Offline Oversample training (50 epochs) ────"
+echo "─── [A0c-v2] Exp 102 — Offline Oversample (50 epochs) ──────────"
 python run_experiment.py --exp 102
 echo "    Done: $(date)"
 
-# ── A1: OrdSupCon pre-train + fine-tune ─────────────────────────────────────
+# ── A1-v2: OrdSupCon with offline oversample, 30 contrastive + 60 fine-tune ─
 echo ""
-echo "─── [A1]  Exp 103 — OrdSupCon APTOS ────────────────────────────"
-echo "          Stage 1: 50 contrastive epochs"
-echo "          Stage 2: 60 fine-tuning epochs"
+echo "─── [A1-v2] Exp 103 — OrdSupCon APTOS ──────────────────────────"
+echo "            Stage 1: 30 contrastive epochs"
+echo "            Stage 2: 60 fine-tune epochs (freeze=2)"
 python run_experiment.py --exp 103
 echo "    Done: $(date)"
 
 echo ""
 echo "====================================================="
-echo "  Phase A Complete: $(date)"
-echo "  Artifacts → results/exp10{0,1,2,3}_*/"
+echo "  Phase A v2 Complete: $(date)"
+echo "  Artifacts → results/exp102_*/ and results/exp103_*/"
 echo "====================================================="

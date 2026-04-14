@@ -134,6 +134,12 @@ def main() -> None:
         )
         pretrained_backbone_sd = run_contrastive_pretraining(cfg, contrastive_loader, device)
 
+        # Free VRAM from contrastive stage before fine-tuning
+        del contrastive_loader, contrastive_ds
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+            logger.info("Cleared VRAM after contrastive pre-training")
+
     model = run_training(cfg, train_loader, val_loader, device, pretrained_backbone_sd)
 
     if cfg.use_pseudo_labels:

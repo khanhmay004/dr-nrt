@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import TRAIN_CSV, TRAIN_IMG_DIR, ROOT_DIR, IMAGE_SIZE
 from src.dataset import ben_graham_preprocess
-from src.transforms import get_train_transform
+from src.transforms import get_offline_oversample_transform
 
 
 def main() -> None:
@@ -53,7 +53,7 @@ def main() -> None:
     print(f"Original class counts: {counts}")
     print(f"Target per class: {args.target}")
 
-    transform = get_train_transform(aug_level=2)
+    transform = get_offline_oversample_transform()
     total_generated = 0
 
     for cls in range(5):
