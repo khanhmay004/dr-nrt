@@ -308,7 +308,7 @@ EXPERIMENTS: dict[int, ExpConfig] = {
             CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
         ),
         total_epochs=60,
-        freeze_epochs=5,
+        freeze_epochs=7,
         oversample_target=1000,
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),
