@@ -243,3 +243,18 @@ def build_datasets(
     )
 
     return train_ds, val_ds, test_ds
+
+
+def build_eyepacs_dataset(cfg: ExpConfig) -> DRDataset:
+    """Build a DRDataset from pre-processed EyePACS images for contrastive pre-training.
+
+    EyePACS CSV uses the same ``id_code,diagnosis`` format as APTOS, so
+    ``load_labels`` and ``DRDataset`` work directly.  No transform is applied
+    here — the caller wraps the result in ``ContrastiveDRDataset`` which
+    handles dual-view augmentation.
+    """
+    eyepacs_labels = load_labels(Path(cfg.eyepacs_csv))
+    eyepacs_codes = list(eyepacs_labels.keys())
+    return DRDataset(
+        eyepacs_codes, eyepacs_labels, Path(cfg.eyepacs_dir), transform=None,
+    )

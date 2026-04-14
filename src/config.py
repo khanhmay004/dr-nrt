@@ -100,6 +100,7 @@ class ExpConfig:
     contrastive_proj_dim: int = 128
     contrastive_data: str = "aptos"  # aptos | eyepacs
     eyepacs_dir: str = ""
+    eyepacs_csv: str = ""
 
     # checkpoint to load backbone from (for eval-only or contrastive init)
     load_checkpoint: str = ""
@@ -267,6 +268,27 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         contrastive_temperature=0.07,
         contrastive_proj_dim=128,
         contrastive_data="aptos",
+        total_epochs=60,
+        freeze_epochs=2,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # === Phase B: EyePACS Contrastive Pre-training (docs/03-ordinal-supcon.md §10) ===
+
+    # A2: OrdSupCon pre-train on EyePACS (35K) → fine-tune on APTOS + offline oversample
+    200: ExpConfig(
+        exp_id=200, name="a2_ordsupcon_eyepacs",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        use_contrastive_pretrain=True,
+        contrastive_epochs=15,
+        contrastive_lr=1e-3,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+        contrastive_data="eyepacs",
+        eyepacs_dir=str(ROOT_DIR / "data" / "eyepacs_processed"),
+        eyepacs_csv=str(ROOT_DIR / "data" / "eyepacs_labels.csv"),
         total_epochs=60,
         freeze_epochs=2,
         oversample_target=1000,

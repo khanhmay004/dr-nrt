@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.config import get_config
-from src.dataset import build_datasets, ContrastiveDRDataset
+from src.dataset import build_datasets, build_eyepacs_dataset, ContrastiveDRDataset
 from src.transforms import get_train_transform, get_val_transform
 from src.train import run_training, evaluate_on_test, run_contrastive_pretraining
 from src.pseudo_label import generate_pseudo_labels, finetune_with_pseudo
@@ -110,22 +110,28 @@ def main() -> None:
         num_workers=args.workers, pin_memory=True,
     )
 
-    # --- A1: Contrastive pre-training → supervised fine-tuning ---
+    # --- A1/A2: Contrastive pre-training → supervised fine-tuning ---
     pretrained_backbone_sd = None
     if cfg.use_contrastive_pretrain:
-        contrastive_ds = ContrastiveDRDataset(train_ds, transform_train)
+        if cfg.contrastive_data == "eyepacs":
+            eyepacs_ds = build_eyepacs_dataset(cfg)
+            contrastive_ds = ContrastiveDRDataset(eyepacs_ds, transform_train)
+            logger.info(f"Contrastive data: EyePACS ({len(eyepacs_ds)} images)")
+        else:
+            contrastive_ds = ContrastiveDRDataset(train_ds, transform_train)
+            logger.info(f"Contrastive data: APTOS ({len(train_ds)} images)")
 
         contrastive_sampler = None
         contrastive_shuffle = True
-        if cfg.use_weighted_sampler:
-            from torch.utils.data import WeightedRandomSampler as WRS
-            c_targets = [s[1] for s in contrastive_ds.base_dataset.samples]
-            c_counts = [0] * 5
-            for t in c_targets:
-                c_counts[t] += 1
-            c_weights = [1.0 / c_counts[t] for t in c_targets]
-            contrastive_sampler = WRS(c_weights, num_samples=len(c_targets), replacement=True)
-            contrastive_shuffle = False
+        from torch.utils.data import WeightedRandomSampler as WRS
+        c_targets = [s[1] for s in contrastive_ds.base_dataset.samples]
+        c_counts = [0] * 5
+        for t in c_targets:
+            c_counts[t] += 1
+        c_weights = [1.0 / c_counts[t] for t in c_targets]
+        contrastive_sampler = WRS(c_weights, num_samples=len(c_targets), replacement=True)
+        contrastive_shuffle = False
+        logger.info(f"Contrastive WRS — class counts: {c_counts}")
 
         contrastive_loader = DataLoader(
             contrastive_ds, batch_size=cfg.batch_size,
@@ -136,6 +142,8 @@ def main() -> None:
 
         # Free VRAM from contrastive stage before fine-tuning
         del contrastive_loader, contrastive_ds
+        if cfg.contrastive_data == "eyepacs":
+            del eyepacs_ds
         if device.type == "cuda":
             torch.cuda.empty_cache()
             logger.info("Cleared VRAM after contrastive pre-training")
