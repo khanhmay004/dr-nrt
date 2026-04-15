@@ -102,6 +102,10 @@ class ExpConfig:
     eyepacs_dir: str = ""
     eyepacs_csv: str = ""
 
+    # joint contrastive fine-tuning (OrdSupCon as auxiliary loss during supervised training)
+    use_joint_contrastive: bool = False
+    joint_contrastive_weight: float = 0.1
+
     # head regularization
     head_dropout: float = 0.0  # dropout probability before FC (0.0 = disabled)
 
@@ -330,6 +334,27 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         freeze_epochs=7,
         oversample_target=1000,
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # === Phase F: Joint Contrastive Fine-tuning (docs/03-ordinal-supcon.md §11.6) ===
+
+    # F2: Joint Focal + OrdSupCon, D1 regularization recipe
+    501: ExpConfig(
+        exp_id=501, name="f2_joint_ordsupcon",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=100,
+        freeze_epochs=7,
+        lr_finetune=5e-5,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+        use_joint_contrastive=True,
+        joint_contrastive_weight=0.1,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
     ),
 }
 

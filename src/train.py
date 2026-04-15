@@ -193,49 +193,93 @@ def train_one_epoch(
     cfg: ExpConfig,
     epoch: int,
     total_epochs: int,
+    projector: nn.Module | None = None,
+    contrastive_criterion: nn.Module | None = None,
 ) -> tuple[float, float]:
     model.train()
+    if projector is not None:
+        projector.train()
     total_loss = 0.0
     correct = 0
     total_samples = 0
 
     pbar = tqdm(loader, desc=f"Epoch {epoch}/{total_epochs} [Train]", leave=True)
     for batch in pbar:
-        images, targets = batch[0].to(device), batch[1].to(device)
-        sample_weights = batch[3].to(device) if len(batch) > 3 else None
+        is_joint = cfg.use_joint_contrastive and projector is not None
 
-        use_mix = cfg.use_mixup or cfg.use_cutmix
-        if use_mix and (cfg.use_mixup and cfg.use_cutmix):
-            if np.random.rand() < 0.5:
-                images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
-            else:
-                images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
-        elif cfg.use_mixup:
-            images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
-        elif cfg.use_cutmix:
-            images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
+        if is_joint:
+            # --- Joint Focal + OrdSupCon path ---
+            view1 = batch[0].to(device)
+            view2 = batch[1].to(device)
+            targets = batch[2].to(device)
+
+            views = torch.cat([view1, view2], dim=0)
+
+            # Capture backbone features before FC via hook on pooling layer
+            _captured: dict[str, torch.Tensor] = {}
+            hook = model.avgpool.register_forward_hook(
+                lambda _m, _inp, out: _captured.update(feat=out)
+            )
+            all_logits = model(views)
+            hook.remove()
+
+            # Classification loss on view1 only
+            logits = all_logits[: view1.size(0)]
+            loss_cls = criterion(logits, targets)
+
+            # Contrastive loss on both views
+            features = _captured["feat"].flatten(1).float()  # [2B, 2048]
+            z = projector(features)
+            labels_2x = torch.cat([targets, targets], dim=0)
+            loss_con = contrastive_criterion(z, labels_2x)
+
+            loss = loss_cls + cfg.joint_contrastive_weight * loss_con
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * view1.size(0)
+            total_samples += view1.size(0)
+            correct += (logits.argmax(1) == targets).sum().item()
+
         else:
-            y_a, y_b, lam = targets, targets, 1.0
+            # --- Original supervised path ---
+            images, targets = batch[0].to(device), batch[1].to(device)
+            sample_weights = batch[3].to(device) if len(batch) > 3 else None
 
-        outputs = model(images)
-        loss = compute_mixed_loss(criterion, outputs, y_a, y_b, lam, cfg.is_regression)
-
-        if sample_weights is not None:
-            loss = (loss * sample_weights).mean()
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item() * images.size(0)
-        total_samples += images.size(0)
-
-        if not (cfg.use_mixup or cfg.use_cutmix):
-            if cfg.is_regression:
-                preds = torch.round(outputs.squeeze(1)).clamp(0, NUM_CLASSES - 1).long()
-                correct += (preds == targets.long()).sum().item()
+            use_mix = cfg.use_mixup or cfg.use_cutmix
+            if use_mix and (cfg.use_mixup and cfg.use_cutmix):
+                if np.random.rand() < 0.5:
+                    images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
+                else:
+                    images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
+            elif cfg.use_mixup:
+                images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
+            elif cfg.use_cutmix:
+                images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
             else:
-                correct += (outputs.argmax(1) == targets).sum().item()
+                y_a, y_b, lam = targets, targets, 1.0
+
+            outputs = model(images)
+            loss = compute_mixed_loss(criterion, outputs, y_a, y_b, lam, cfg.is_regression)
+
+            if sample_weights is not None:
+                loss = (loss * sample_weights).mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * images.size(0)
+            total_samples += images.size(0)
+
+            if not (cfg.use_mixup or cfg.use_cutmix):
+                if cfg.is_regression:
+                    preds = torch.round(outputs.squeeze(1)).clamp(0, NUM_CLASSES - 1).long()
+                    correct += (preds == targets.long()).sum().item()
+                else:
+                    correct += (outputs.argmax(1) == targets).sum().item()
 
         avg_loss = total_loss / total_samples
         pbar.set_postfix(loss=f"{avg_loss:.4f}")
@@ -315,6 +359,24 @@ def run_training(
 ) -> nn.Module:
     model = build_model(cfg).to(device)
 
+    # --- Joint contrastive: build projection head + auxiliary loss ---
+    projector = None
+    contrastive_criterion = None
+    if cfg.use_joint_contrastive:
+        from src.models import ProjectionHead
+        from src.losses import OrdSupConLoss
+        in_features = 2048  # ResNet-50 backbone output dim
+        projector = ProjectionHead(
+            in_dim=in_features, hidden_dim=512, out_dim=cfg.contrastive_proj_dim,
+        ).to(device)
+        contrastive_criterion = OrdSupConLoss(
+            num_classes=NUM_CLASSES, temperature=cfg.contrastive_temperature,
+        )
+        logger.info(
+            f"Joint contrastive enabled — λ={cfg.joint_contrastive_weight}, "
+            f"τ={cfg.contrastive_temperature}, proj_dim={cfg.contrastive_proj_dim}"
+        )
+
     # Load pre-trained backbone weights (e.g., from contrastive pre-training)
     if pretrained_backbone_sd is not None:
         # The contrastive backbone has fc=Identity, but build_model sets fc=Linear.
@@ -333,6 +395,8 @@ def run_training(
 
     freeze_backbone(model, cfg.backbone)
     head_params = [p for p in model.parameters() if p.requires_grad]
+    if projector is not None:
+        head_params = list(head_params) + list(projector.parameters())
     optimizer = torch.optim.Adam(head_params, lr=cfg.lr_head, weight_decay=cfg.weight_decay)
 
     cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -361,7 +425,10 @@ def run_training(
     for epoch in range(1, cfg.total_epochs + 1):
         if epoch == cfg.freeze_epochs + 1:
             unfreeze_all(model)
-            optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr_finetune, weight_decay=cfg.weight_decay)
+            all_params = list(model.parameters())
+            if projector is not None:
+                all_params = all_params + list(projector.parameters())
+            optimizer = torch.optim.Adam(all_params, lr=cfg.lr_finetune, weight_decay=cfg.weight_decay)
 
             if cfg.scheduler == "step":
                 scheduler = torch.optim.lr_scheduler.StepLR(
@@ -380,6 +447,7 @@ def run_training(
 
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device, cfg, epoch, cfg.total_epochs,
+            projector=projector, contrastive_criterion=contrastive_criterion,
         )
 
         if cfg.use_swa and swa_model is not None and epoch >= cfg.swa_start_epoch:

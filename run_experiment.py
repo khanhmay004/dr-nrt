@@ -96,8 +96,14 @@ def main() -> None:
         shuffle_train = False
         logger.info(f"Using WeightedRandomSampler — class counts: {class_counts}")
 
+    # Wrap train dataset for joint contrastive (dual-view augmentation)
+    train_ds_for_loader = train_ds
+    if cfg.use_joint_contrastive:
+        train_ds_for_loader = ContrastiveDRDataset(train_ds, transform_train)
+        logger.info(f"Joint contrastive — dual-view training ({len(train_ds_for_loader)} samples)")
+
     train_loader = DataLoader(
-        train_ds, batch_size=cfg.batch_size, shuffle=shuffle_train,
+        train_ds_for_loader, batch_size=cfg.batch_size, shuffle=shuffle_train,
         sampler=sampler,
         num_workers=args.workers, pin_memory=True,
     )
