@@ -13,6 +13,11 @@ TEST_IMG_DIR = DATA_DIR / "test_split"
 CHECKPOINT_DIR = ROOT_DIR / "checkpoints"
 RESULTS_DIR = ROOT_DIR / "results"
 
+# IDRiD supplement (Phase C)
+IDRID_DIR = ROOT_DIR / "B_Disease_Grading"
+IDRID_PROCESSED_DIR = ROOT_DIR / "data" / "idrid_processed"
+IDRID_CSV = ROOT_DIR / "data" / "idrid_labels.csv"
+
 NUM_CLASSES = 5
 IMAGE_SIZE = 512
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -105,6 +110,11 @@ class ExpConfig:
     # joint contrastive fine-tuning (OrdSupCon as auxiliary loss during supervised training)
     use_joint_contrastive: bool = False
     joint_contrastive_weight: float = 0.1
+
+    # IDRiD supplement (Phase C)
+    use_idrid_supplement: bool = False
+    idrid_processed_dir: str = ""
+    idrid_csv: str = ""
 
     # head regularization
     head_dropout: float = 0.0  # dropout probability before FC (0.0 = disabled)
@@ -346,7 +356,8 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         head_dropout=0.3,
         weight_decay=1e-4,
         scheduler="cosine_decay",
-        total_epochs=100,
+        batch_size=24,
+        total_epochs=80,
         freeze_epochs=7,
         lr_finetune=5e-5,
         oversample_target=1000,
@@ -355,6 +366,25 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         joint_contrastive_weight=0.1,
         contrastive_temperature=0.07,
         contrastive_proj_dim=128,
+    ),
+
+    # === Phase C: IDRiD Supplement (docs/03-ordinal-supcon.md §11.3) ===
+
+    # C1: IDRiD Grade 3+4 supplement with D1 regularization recipe
+    301: ExpConfig(
+        exp_id=301, name="c1_idrid_supplement",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=100,
+        freeze_epochs=5,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+        use_idrid_supplement=True,
+        idrid_processed_dir=str(IDRID_PROCESSED_DIR),
+        idrid_csv=str(IDRID_CSV),
     ),
 }
 

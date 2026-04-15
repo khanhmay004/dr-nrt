@@ -12,6 +12,7 @@ checkpoints/
 results/
 Eyepacs/
 .venv/
+B_Disease_Grading/
 *.o
 *.so
 *.exe

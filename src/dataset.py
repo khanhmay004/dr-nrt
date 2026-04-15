@@ -56,30 +56,42 @@ class DRDataset(Dataset):
         transform: object | None = None,
         is_regression: bool = False,
         extra_img_dir: Path | None = None,
+        extra_img_dirs: list[Path] | None = None,
     ) -> None:
         self.img_dir = img_dir
-        self.extra_img_dir = extra_img_dir
+        # Support both legacy single extra_img_dir and new extra_img_dirs list
+        self.extra_img_dirs: list[Path] = []
+        if extra_img_dirs:
+            self.extra_img_dirs = list(extra_img_dirs)
+        elif extra_img_dir is not None:
+            self.extra_img_dirs = [extra_img_dir]
+        # Keep legacy attr for ContrastiveDRDataset compatibility
+        self.extra_img_dir = self.extra_img_dirs[0] if self.extra_img_dirs else None
         self.transform = transform
         self.is_regression = is_regression
 
         self.samples: list[tuple[str, int]] = []
         for code in id_codes:
-            img_path = img_dir / f"{code}.png"
-            if img_path.exists():
+            if self._find_image(code) is not None:
                 self.samples.append((code, labels[code]))
-            elif extra_img_dir is not None:
-                img_path_extra = extra_img_dir / f"{code}.png"
-                if img_path_extra.exists():
-                    self.samples.append((code, labels[code]))
+
+    def _find_image(self, code: str) -> Path | None:
+        """Locate an image across primary and extra directories."""
+        img_path = self.img_dir / f"{code}.png"
+        if img_path.exists():
+            return img_path
+        for d in self.extra_img_dirs:
+            p = d / f"{code}.png"
+            if p.exists():
+                return p
+        return None
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
         code, label = self.samples[idx]
-        img_path = self.img_dir / f"{code}.png"
-        if not img_path.exists() and self.extra_img_dir is not None:
-            img_path = self.extra_img_dir / f"{code}.png"
+        img_path = self._find_image(code)
 
         image = cv2.imread(str(img_path))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -227,11 +239,32 @@ def build_datasets(
                     train_labels[code] = label
                     oversample_codes.append(code)
 
+    # IDRiD supplement: inject preprocessed Grade 3+4 images into training set
+    idrid_codes: list[str] = []
+    idrid_img_dir: Path | None = None
+    if cfg.use_idrid_supplement and cfg.idrid_csv and cfg.idrid_processed_dir:
+        idrid_path = Path(cfg.idrid_processed_dir)
+        if idrid_path.exists():
+            idrid_labels = load_labels(Path(cfg.idrid_csv))
+            for code, label in idrid_labels.items():
+                img_file = idrid_path / f"{code}.png"
+                if img_file.exists():
+                    train_labels[code] = label
+                    idrid_codes.append(code)
+            idrid_img_dir = idrid_path
+
+    # Determine extra image directories (oversample + IDRiD may coexist)
+    extra_dirs: list[Path] = []
+    if oversample_codes and cfg.oversample_dir:
+        extra_dirs.append(Path(cfg.oversample_dir))
+    if idrid_codes and idrid_img_dir is not None:
+        extra_dirs.append(idrid_img_dir)
+
     train_ds = DRDataset(
-        train_codes + oversample_codes, train_labels,
-        TRAIN_IMG_DIR if not oversample_codes else TRAIN_IMG_DIR,
+        train_codes + oversample_codes + idrid_codes, train_labels,
+        TRAIN_IMG_DIR,
         transform=transform_train, is_regression=cfg.is_regression,
-        extra_img_dir=Path(cfg.oversample_dir) if oversample_codes else None,
+        extra_img_dirs=extra_dirs if extra_dirs else None,
     )
     val_ds = DRDataset(
         val_codes, train_labels, TRAIN_IMG_DIR,
