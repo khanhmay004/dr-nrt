@@ -195,7 +195,6 @@ def train_one_epoch(
     total_epochs: int,
     projector: nn.Module | None = None,
     contrastive_criterion: nn.Module | None = None,
-    scaler: torch.amp.GradScaler | None = None,
 ) -> tuple[float, float]:
     model.train()
     if projector is not None:
@@ -209,43 +208,36 @@ def train_one_epoch(
         is_joint = cfg.use_joint_contrastive and projector is not None
 
         if is_joint:
-            # --- Joint Focal + OrdSupCon path (AMP-enabled) ---
+            # --- Joint Focal + OrdSupCon path ---
             view1 = batch[0].to(device)
             view2 = batch[1].to(device)
             targets = batch[2].to(device)
 
             views = torch.cat([view1, view2], dim=0)
 
-            # Capture pooled features via forward hook (registered before autocast)
+            # Capture backbone features before FC via hook on pooling layer
             _captured: dict[str, torch.Tensor] = {}
             hook = model.avgpool.register_forward_hook(
                 lambda _m, _inp, out: _captured.update(feat=out)
             )
+            all_logits = model(views)
+            hook.remove()
+
+            # Classification loss on view1 only
+            logits = all_logits[: view1.size(0)]
+            loss_cls = criterion(logits, targets)
+
+            # Contrastive loss on both views
+            features = _captured["feat"].flatten(1).float()  # [2B, 2048]
+            z = projector(features)
+            labels_2x = torch.cat([targets, targets], dim=0)
+            loss_con = contrastive_criterion(z, labels_2x)
+
+            loss = loss_cls + cfg.joint_contrastive_weight * loss_con
 
             optimizer.zero_grad()
-            with torch.amp.autocast("cuda", enabled=(scaler is not None)):
-                all_logits = model(views)
-                hook.remove()
-
-                # Classification loss on view1 only
-                logits = all_logits[: view1.size(0)]
-                loss_cls = criterion(logits, targets)
-
-                # Contrastive loss — cast features to FP32 for numerical stability
-                features = _captured["feat"].flatten(1).float()  # [2B, 2048]
-                z = projector(features)
-                labels_2x = torch.cat([targets, targets], dim=0)
-                loss_con = contrastive_criterion(z, labels_2x)
-
-                loss = loss_cls + cfg.joint_contrastive_weight * loss_con
-
-            if scaler is not None:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
 
             total_loss += loss.item() * view1.size(0)
             total_samples += view1.size(0)
@@ -418,12 +410,6 @@ def run_training(
     if cfg.use_swa:
         swa_model = AveragedModel(model).to(device)
 
-    # AMP GradScaler — only for joint contrastive path on CUDA
-    joint_scaler: torch.amp.GradScaler | None = None
-    if cfg.use_joint_contrastive and device.type == "cuda":
-        joint_scaler = torch.amp.GradScaler("cuda")
-        logger.info("AMP GradScaler enabled for joint contrastive training")
-
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
 
     if device.type == "cuda":
@@ -462,7 +448,6 @@ def run_training(
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device, cfg, epoch, cfg.total_epochs,
             projector=projector, contrastive_criterion=contrastive_criterion,
-            scaler=joint_scaler,
         )
 
         if cfg.use_swa and swa_model is not None and epoch >= cfg.swa_start_epoch:
