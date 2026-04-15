@@ -62,7 +62,13 @@ def _build_resnet50(cfg: ExpConfig) -> nn.Module:
         model.avgpool = GeM(p=cfg.gem_p)
 
     in_features = model.fc.in_features
-    model.fc = nn.Linear(in_features, cfg.num_outputs)
+    if cfg.head_dropout > 0.0:
+        model.fc = nn.Sequential(
+            nn.Dropout(p=cfg.head_dropout),
+            nn.Linear(in_features, cfg.num_outputs),
+        )
+    else:
+        model.fc = nn.Linear(in_features, cfg.num_outputs)
     return model
 
 

@@ -371,6 +371,12 @@ def run_training(
                 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                     optimizer, T_0=cfg.cosine_t0, T_mult=cfg.cosine_tmult, eta_min=cfg.cosine_eta_min,
                 )
+            elif cfg.scheduler == "cosine_decay":
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer,
+                    T_max=cfg.total_epochs - cfg.freeze_epochs,
+                    eta_min=cfg.cosine_eta_min,
+                )
 
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device, cfg, epoch, cfg.total_epochs,

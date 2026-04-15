@@ -102,6 +102,9 @@ class ExpConfig:
     eyepacs_dir: str = ""
     eyepacs_csv: str = ""
 
+    # head regularization
+    head_dropout: float = 0.0  # dropout probability before FC (0.0 = disabled)
+
     # checkpoint to load backbone from (for eval-only or contrastive init)
     load_checkpoint: str = ""
 
@@ -294,6 +297,22 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         eyepacs_csv=str(ROOT_DIR / "data" / "eyepacs_processed" / "eyepacs_labels.csv"),
         total_epochs=60,
         freeze_epochs=2,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # === Phase D: Regularization & LR Schedule (docs/03-ordinal-supcon.md §11.4) ===
+
+    # D1: A0 recipe + Dropout(0.3) before FC + CosineAnnealingLR + 100 epochs + wd=1e-4
+    300: ExpConfig(
+        exp_id=300, name="d1_dropout_cosine",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=100,
+        freeze_epochs=5,
         oversample_target=1000,
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),

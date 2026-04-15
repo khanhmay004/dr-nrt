@@ -27,13 +27,13 @@ def get_train_transform(aug_level: int) -> A.Compose | None:
 
     if aug_level >= 2:
         base.extend([
-            A.CoarseDropout(
-                max_holes=8, max_height=32, max_width=32, fill_value=0, p=0.3,
-            ),
+            # A.CoarseDropout(
+            #     max_holes=8, max_height=32, max_width=32, fill_value=0, p=0.3,
+            # ),
             A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
-            A.ElasticTransform(alpha=120, sigma=6, p=0.2, border_mode=0),
-            A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.2, border_mode=0),
-            A.GaussianBlur(blur_limit=(3, 7), p=0.2),
+            # A.ElasticTransform(alpha=120, sigma=6, p=0.2, border_mode=0),
+            # A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.2, border_mode=0),
+            A.GaussianBlur(blur_limit=(3, 5), p=0.2),
         ])
 
     return A.Compose(base)
