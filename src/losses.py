@@ -102,7 +102,7 @@ class OrdSupConLoss(nn.Module):
 
         # Mask out self-similarities
         self_mask = torch.eye(batch_size, dtype=torch.bool, device=device)
-        sim.masked_fill_(self_mask, -1e9)
+        sim.masked_fill_(self_mask, -1e4)  # FP16-safe (max half ≈ 65504)
 
         # Log-softmax over the denominator (all negatives + positives)
         log_prob = sim - torch.logsumexp(sim, dim=1, keepdim=True)
