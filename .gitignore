@@ -16,7 +16,7 @@ B_Disease_Grading/
 *.o
 *.so
 *.exe
-
+.agents/
 # IDE and editor files
 .vscode/
 .idea/

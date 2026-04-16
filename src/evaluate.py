@@ -184,6 +184,11 @@ def save_training_curves(
 
     axes[1].plot(log_df["epoch"], log_df["val_qwk"], label="Val QWK")
     axes[1].plot(log_df["epoch"], log_df["val_macro_f1"], label="Val Macro F1")
+    if "val_composite" in log_df.columns:
+        axes[1].plot(
+            log_df["epoch"], log_df["val_composite"],
+            label="Val Composite", linestyle="--", color="black", linewidth=1.5,
+        )
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Score")
     axes[1].set_title("Validation Metrics")
