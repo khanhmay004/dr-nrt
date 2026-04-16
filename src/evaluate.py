@@ -23,6 +23,40 @@ from sklearn.metrics import (
 from src.config import CLASS_NAMES, NUM_CLASSES
 
 
+def corn_logits_to_probs(logits: np.ndarray, num_classes: int) -> np.ndarray:
+    """Convert CORN logits [B, K-1] to class probabilities [B, K] via conditional chain rule."""
+    cond_probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -500, 500)))
+
+    cum_probs = np.ones((logits.shape[0], num_classes))
+    cum_probs[:, 1] = cond_probs[:, 0]
+    for k in range(2, num_classes):
+        cum_probs[:, k] = cum_probs[:, k - 1] * cond_probs[:, k - 1]
+
+    class_probs = np.zeros_like(cum_probs)
+    for k in range(num_classes - 1):
+        class_probs[:, k] = cum_probs[:, k] - cum_probs[:, k + 1]
+    class_probs[:, -1] = cum_probs[:, -1]
+    return np.clip(class_probs, 0, 1)
+
+
+def cumlink_to_class(logits: np.ndarray) -> np.ndarray:
+    """Convert cumulative link logits [B, K-1] to class predictions [B]."""
+    cum_probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -500, 500)))
+    return (cum_probs > 0.5).sum(axis=1).astype(np.intp)
+
+
+def cumlink_logits_to_probs(logits: np.ndarray, num_classes: int) -> np.ndarray:
+    """Convert cumulative link logits [B, K-1] to class probabilities [B, K]."""
+    cum_probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -500, 500)))
+
+    class_probs = np.zeros((logits.shape[0], num_classes))
+    class_probs[:, 0] = 1.0 - cum_probs[:, 0]
+    for k in range(1, num_classes - 1):
+        class_probs[:, k] = cum_probs[:, k - 1] - cum_probs[:, k]
+    class_probs[:, -1] = cum_probs[:, -1]
+    return np.clip(class_probs, 0, 1)
+
+
 def compute_ece(
     probs: np.ndarray,
     targets: np.ndarray,

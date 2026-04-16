@@ -54,6 +54,48 @@ class FocalLoss(nn.Module):
         return loss.sum(dim=1).mean()
 
 
+class CORNLoss(nn.Module):
+    """CORN (Conditional Ordinal Regression) loss wrapper."""
+
+    def __init__(self, num_classes: int = 5) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        from coral_pytorch.losses import corn_loss
+        return corn_loss(logits, targets, num_classes=self.num_classes)
+
+
+class CumulativeLinkLoss(nn.Module):
+    """Cumulative link model: K-1 independent binary cross-entropy losses."""
+
+    def __init__(self, num_classes: int = 5) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        K = self.num_classes
+        levels = torch.arange(1, K, device=targets.device).unsqueeze(0)
+        binary_targets = (targets.unsqueeze(1) >= levels).float()
+        return F.binary_cross_entropy_with_logits(logits, binary_targets)
+
+
+class EMDLoss(nn.Module):
+    """Earth Mover's Distance loss for ordinal classification."""
+
+    def __init__(self, num_classes: int = 5) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = F.softmax(logits, dim=1)
+        one_hot = F.one_hot(targets, self.num_classes).float()
+        cdf_pred = torch.cumsum(probs, dim=1)
+        cdf_true = torch.cumsum(one_hot, dim=1)
+        emd = (cdf_pred - cdf_true).pow(2).sum(dim=1).mean()
+        return emd
+
+
 def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
     if cfg.loss_type == "ce":
         return nn.CrossEntropyLoss()
@@ -68,6 +110,15 @@ def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
 
     if cfg.loss_type == "smoothl1":
         return nn.SmoothL1Loss()
+
+    if cfg.loss_type == "corn":
+        return CORNLoss(num_classes=NUM_CLASSES)
+
+    if cfg.loss_type == "cumlink":
+        return CumulativeLinkLoss(num_classes=NUM_CLASSES)
+
+    if cfg.loss_type == "emd":
+        return EMDLoss(num_classes=NUM_CLASSES)
 
     raise ValueError(f"Unknown loss type: {cfg.loss_type}")
 

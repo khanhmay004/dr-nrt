@@ -62,17 +62,24 @@ def _build_resnet50(cfg: ExpConfig) -> nn.Module:
         model.avgpool = GeM(p=cfg.gem_p)
 
     in_features = model.fc.in_features
+    actual_outputs = cfg.num_outputs
+    if cfg.loss_type in ("corn", "cumlink"):
+        actual_outputs = cfg.num_outputs - 1
+
     if cfg.head_dropout > 0.0:
         model.fc = nn.Sequential(
             nn.Dropout(p=cfg.head_dropout),
-            nn.Linear(in_features, cfg.num_outputs),
+            nn.Linear(in_features, actual_outputs),
         )
     else:
-        model.fc = nn.Linear(in_features, cfg.num_outputs)
+        model.fc = nn.Linear(in_features, actual_outputs)
     return model
 
 
 def _build_efficientnet_b4(cfg: ExpConfig) -> nn.Module:
+    if cfg.loss_type in ("corn", "cumlink"):
+        raise NotImplementedError(f"CORN/CumLink not yet supported for {cfg.backbone}")
+
     weights = tvm.EfficientNet_B4_Weights.IMAGENET1K_V1
     model = tvm.efficientnet_b4(weights=weights)
 
@@ -85,6 +92,9 @@ def _build_efficientnet_b4(cfg: ExpConfig) -> nn.Module:
 
 
 def _build_convnext_small(cfg: ExpConfig) -> nn.Module:
+    if cfg.loss_type in ("corn", "cumlink"):
+        raise NotImplementedError(f"CORN/CumLink not yet supported for {cfg.backbone}")
+
     weights = tvm.ConvNeXt_Small_Weights.IMAGENET1K_V1
     model = tvm.convnext_small(weights=weights)
 

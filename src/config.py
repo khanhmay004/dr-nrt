@@ -40,7 +40,7 @@ class ExpConfig:
     num_outputs: int = 5  # 5 for classification, 1 for regression
 
     # loss
-    loss_type: str = "ce"  # ce | focal | smoothl1
+    loss_type: str = "ce"  # ce | focal | smoothl1 | corn | cumlink | emd
     focal_gamma: float = 2.0
     use_class_weights: bool = False
     label_smoothing: float = 0.0
@@ -449,6 +449,107 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         use_idrid_supplement=True,
         idrid_processed_dir=str(IDRID_PROCESSED_DIR),
         idrid_csv=str(IDRID_CSV),
+    ),
+
+    # === Phase G: Ordinal-Consistent Fine-tuning (docs/04-coral.md) ===
+
+    # A1-v3: Re-train APTOS backbone with 40 contrastive epochs for Phase G
+    605: ExpConfig(
+        exp_id=605, name="a1v3_ordsupcon_40ep",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        use_contrastive_pretrain=True,
+        contrastive_epochs=40,
+        contrastive_lr=1e-3,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+        contrastive_data="aptos",
+        total_epochs=1,
+        freeze_epochs=1,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # G1: CORN on ImageNet backbone (GATE experiment)
+    600: ExpConfig(
+        exp_id=600, name="g1_corn_imagenet",
+        aug_level=2, loss_type="corn", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # G2: CORN on A1-v3 backbone (ordinal pretrain + ordinal finetune)
+    601: ExpConfig(
+        exp_id=601, name="g2_corn_a1",
+        aug_level=2, loss_type="corn", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # G3: CORN on A2 backbone (test if CORN fixes domain gap)
+    602: ExpConfig(
+        exp_id=602, name="g3_corn_a2",
+        aug_level=2, loss_type="corn", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # G4: EMD loss on A1-v3 backbone (ordinal loss, no architecture change)
+    603: ExpConfig(
+        exp_id=603, name="g4_emd_a1",
+        aug_level=2, loss_type="emd", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # G5: Cumulative Link BCE on A1-v3 backbone
+    604: ExpConfig(
+        exp_id=604, name="g5_cumlink_a1",
+        aug_level=2, loss_type="cumlink", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),
 }
 

@@ -16,6 +16,9 @@ from src.config import CLASS_NAMES, NUM_CLASSES, ExpConfig
 from src.evaluate import (
     OptimizedRounder,
     compute_metrics,
+    corn_logits_to_probs,
+    cumlink_logits_to_probs,
+    cumlink_to_class,
     quadratic_weighted_kappa,
     regression_to_class,
     save_classification_report,
@@ -266,6 +269,12 @@ def train_one_epoch(
             images, targets = batch[0].to(device), batch[1].to(device)
             sample_weights = batch[3].to(device) if len(batch) > 3 else None
 
+            if (cfg.use_mixup or cfg.use_cutmix) and cfg.loss_type in ("corn", "cumlink"):
+                raise ValueError(
+                    f"Mixup/CutMix is incompatible with ordinal loss '{cfg.loss_type}'. "
+                    "CORN/CumLink require integer class labels."
+                )
+
             use_mix = cfg.use_mixup or cfg.use_cutmix
             if use_mix and (cfg.use_mixup and cfg.use_cutmix):
                 if np.random.rand() < 0.5:
@@ -296,6 +305,12 @@ def train_one_epoch(
                 if cfg.is_regression:
                     preds = torch.round(outputs.squeeze(1)).clamp(0, NUM_CLASSES - 1).long()
                     correct += (preds == targets.long()).sum().item()
+                elif cfg.loss_type == "corn":
+                    from coral_pytorch.dataset import corn_label_from_logits
+                    correct += (corn_label_from_logits(outputs) == targets).sum().item()
+                elif cfg.loss_type == "cumlink":
+                    preds = (torch.sigmoid(outputs) > 0.5).sum(dim=1).long()
+                    correct += (preds == targets).sum().item()
                 else:
                     correct += (outputs.argmax(1) == targets).sum().item()
 
@@ -336,6 +351,21 @@ def validate(
             all_preds.append(raw)
             preds_cls = torch.round(outputs.squeeze(1)).clamp(0, NUM_CLASSES - 1).long()
             correct += (preds_cls == targets.long()).sum().item()
+        elif cfg.loss_type == "corn":
+            loss = criterion(outputs, targets)
+            from coral_pytorch.dataset import corn_label_from_logits
+            pred_cls = corn_label_from_logits(outputs).cpu().numpy()
+            all_preds.append(pred_cls)
+            probs = corn_logits_to_probs(outputs.cpu().numpy(), NUM_CLASSES)
+            all_probs.append(probs)
+            correct += int((pred_cls == targets.cpu().numpy()).sum())
+        elif cfg.loss_type == "cumlink":
+            loss = criterion(outputs, targets)
+            pred_cls = cumlink_to_class(outputs.cpu().numpy())
+            all_preds.append(pred_cls)
+            probs = cumlink_logits_to_probs(outputs.cpu().numpy(), NUM_CLASSES)
+            all_probs.append(probs)
+            correct += int((pred_cls == targets.cpu().numpy()).sum())
         else:
             loss = criterion(outputs, targets)
             all_preds.append(outputs.argmax(dim=1).cpu().numpy())
@@ -423,6 +453,7 @@ def run_training(
     log_path = cfg.results_dir / f"{cfg.exp_name}_log.csv"
     log_rows: list[dict[str, float]] = []
     best_qwk = -1.0
+    best_composite = -1.0
 
     swa_model: AveragedModel | None = None
     if cfg.use_swa:
@@ -481,12 +512,14 @@ def run_training(
         )
         current_lr = optimizer.param_groups[0]["lr"]
 
+        composite = 0.6 * val_metrics["qwk"] + 0.4 * val_metrics["macro_f1"]
         log_row = {
             "epoch": epoch,
             "train_loss": round(train_loss, 6),
             "val_loss": round(val_loss, 6),
             "val_qwk": round(val_metrics["qwk"], 6),
             "val_macro_f1": round(val_metrics["macro_f1"], 6),
+            "val_composite": round(composite, 6),
             "lr": current_lr,
         }
         log_rows.append(log_row)
@@ -519,6 +552,14 @@ def run_training(
             print(
                 f"  ★ New best model saved "
                 f"(κ={best_qwk:.4f}  F1={val_metrics['macro_f1']:.4f})"
+            )
+
+        if composite > best_composite:
+            best_composite = composite
+            torch.save(model.state_dict(), cfg.ckpt_dir / f"{cfg.exp_name}_best_composite.pth")
+            print(
+                f"  ◆ New best composite model "
+                f"(score={best_composite:.4f}  κ={val_metrics['qwk']:.4f}  F1={val_metrics['macro_f1']:.4f})"
             )
 
         if scheduler is not None and epoch > cfg.freeze_epochs:
@@ -577,13 +618,24 @@ def evaluate_on_test(
         targets_int = targets.astype(int)
     else:
         raw_preds, targets, codes = predict_no_tta(model, test_loader, device, is_regression=False)
-        pred_classes = raw_preds.argmax(axis=1) if raw_preds.ndim == 2 else raw_preds
+        if cfg.loss_type == "corn":
+            from coral_pytorch.dataset import corn_label_from_logits
+            pred_classes = corn_label_from_logits(torch.tensor(raw_preds)).numpy()
+        elif cfg.loss_type == "cumlink":
+            pred_classes = cumlink_to_class(raw_preds)
+        else:
+            pred_classes = raw_preds.argmax(axis=1) if raw_preds.ndim == 2 else raw_preds
         targets_int = targets.astype(int)
 
     y_pred_probs = None
     if not cfg.is_regression and raw_preds.ndim == 2:
-        from scipy.special import softmax as sp_softmax
-        y_pred_probs = sp_softmax(raw_preds, axis=1)
+        if cfg.loss_type == "corn":
+            y_pred_probs = corn_logits_to_probs(raw_preds, NUM_CLASSES)
+        elif cfg.loss_type == "cumlink":
+            y_pred_probs = cumlink_logits_to_probs(raw_preds, NUM_CLASSES)
+        else:
+            from scipy.special import softmax as sp_softmax
+            y_pred_probs = sp_softmax(raw_preds, axis=1)
 
     metrics = compute_metrics(targets_int, pred_classes, y_pred_probs)
 
