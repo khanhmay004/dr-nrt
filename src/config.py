@@ -110,6 +110,8 @@ class ExpConfig:
     # joint contrastive fine-tuning (OrdSupCon as auxiliary loss during supervised training)
     use_joint_contrastive: bool = False
     joint_contrastive_weight: float = 0.1
+    joint_contrastive_warmup: int = 0  # epochs after unfreeze to ramp λ from 0; 0=disabled
+    detach_contrastive_backbone: bool = False  # stop contrastive gradient to backbone
 
     # IDRiD supplement (Phase C)
     use_idrid_supplement: bool = False
@@ -364,6 +366,68 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
         use_joint_contrastive=True,
         joint_contrastive_weight=0.1,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+    ),
+
+    # F3: Fix confounds — D1 exact hyperparams + joint OrdSupCon
+    502: ExpConfig(
+        exp_id=502, name="f3_joint_fixed",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        batch_size=32,              # match D1 (was 24 in F2)
+        total_epochs=80,
+        freeze_epochs=5,            # match D1 (was 7 in F2)
+        lr_finetune=1e-4,           # match D1 (was 5e-5 in F2)
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+        use_joint_contrastive=True,
+        joint_contrastive_weight=0.1,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+    ),
+
+    # F4: Low λ + warmup — let classification converge first
+    503: ExpConfig(
+        exp_id=503, name="f4_joint_warmup",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        batch_size=32,
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_finetune=1e-4,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+        use_joint_contrastive=True,
+        joint_contrastive_weight=0.01,   # 10× lower than F2/F3
+        joint_contrastive_warmup=20,     # ramp λ over 20 epochs after unfreeze
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+    ),
+
+    # F5: Gradient detach — contrastive only trains projector, not backbone
+    504: ExpConfig(
+        exp_id=504, name="f5_joint_detach",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        batch_size=32,
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_finetune=1e-4,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+        use_joint_contrastive=True,
+        joint_contrastive_weight=0.1,
+        detach_contrastive_backbone=True, # backbone gradient from OrdSupCon blocked
         contrastive_temperature=0.07,
         contrastive_proj_dim=128,
     ),

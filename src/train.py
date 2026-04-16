@@ -195,6 +195,7 @@ def train_one_epoch(
     total_epochs: int,
     projector: nn.Module | None = None,
     contrastive_criterion: nn.Module | None = None,
+    scaler: torch.amp.GradScaler | None = None,
 ) -> tuple[float, float]:
     model.train()
     if projector is not None:
@@ -208,7 +209,7 @@ def train_one_epoch(
         is_joint = cfg.use_joint_contrastive and projector is not None
 
         if is_joint:
-            # --- Joint Focal + OrdSupCon path ---
+            # --- Joint Focal + OrdSupCon path (AMP-enabled) ---
             view1 = batch[0].to(device)
             view2 = batch[1].to(device)
             targets = batch[2].to(device)
@@ -220,24 +221,41 @@ def train_one_epoch(
             hook = model.avgpool.register_forward_hook(
                 lambda _m, _inp, out: _captured.update(feat=out)
             )
-            all_logits = model(views)
-            hook.remove()
 
-            # Classification loss on view1 only
-            logits = all_logits[: view1.size(0)]
-            loss_cls = criterion(logits, targets)
+            use_amp = device.type == "cuda"
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                all_logits = model(views)
+                hook.remove()
 
-            # Contrastive loss on both views
-            features = _captured["feat"].flatten(1).float()  # [2B, 2048]
-            z = projector(features)
-            labels_2x = torch.cat([targets, targets], dim=0)
-            loss_con = contrastive_criterion(z, labels_2x)
+                # Classification loss on view1 only
+                logits = all_logits[: view1.size(0)]
+                loss_cls = criterion(logits, targets)
 
-            loss = loss_cls + cfg.joint_contrastive_weight * loss_con
+                # Contrastive loss on both views
+                features = _captured["feat"].flatten(1).float()  # [2B, 2048]
+                if cfg.detach_contrastive_backbone:
+                    features = features.detach()  # stop gradient to backbone
+                z = projector(features)
+                labels_2x = torch.cat([targets, targets], dim=0)
+                loss_con = contrastive_criterion(z, labels_2x)
+
+                # Compute effective λ with optional warmup
+                if cfg.joint_contrastive_warmup > 0 and epoch <= cfg.freeze_epochs + cfg.joint_contrastive_warmup:
+                    warmup_progress = max(0.0, (epoch - cfg.freeze_epochs)) / cfg.joint_contrastive_warmup
+                    effective_lambda = cfg.joint_contrastive_weight * warmup_progress
+                else:
+                    effective_lambda = cfg.joint_contrastive_weight
+
+                loss = loss_cls + effective_lambda * loss_con
 
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if use_amp and scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
             total_loss += loss.item() * view1.size(0)
             total_samples += view1.size(0)
@@ -404,12 +422,14 @@ def run_training(
 
     log_path = cfg.results_dir / f"{cfg.exp_name}_log.csv"
     log_rows: list[dict[str, float]] = []
-    best_composite = -1.0
-    COMPOSITE_QWK_WEIGHT = 0.6  # 60% QWK + 40% Macro-F1
+    best_qwk = -1.0
 
     swa_model: AveragedModel | None = None
     if cfg.use_swa:
         swa_model = AveragedModel(model).to(device)
+
+    # AMP scaler for joint contrastive path (halves VRAM for 2-view forward)
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" and cfg.use_joint_contrastive else None
 
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
 
@@ -446,9 +466,11 @@ def run_training(
                     eta_min=cfg.cosine_eta_min,
                 )
 
+
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device, cfg, epoch, cfg.total_epochs,
             projector=projector, contrastive_criterion=contrastive_criterion,
+            scaler=scaler,
         )
 
         if cfg.use_swa and swa_model is not None and epoch >= cfg.swa_start_epoch:
@@ -459,20 +481,12 @@ def run_training(
         )
         current_lr = optimizer.param_groups[0]["lr"]
 
-        # Composite checkpoint score: balances ordinal agreement (QWK) with
-        # per-class discrimination (Macro-F1) to prevent "collapse to Moderate".
-        composite = (
-            COMPOSITE_QWK_WEIGHT * val_metrics["qwk"]
-            + (1 - COMPOSITE_QWK_WEIGHT) * val_metrics["macro_f1"]
-        )
-
         log_row = {
             "epoch": epoch,
             "train_loss": round(train_loss, 6),
             "val_loss": round(val_loss, 6),
             "val_qwk": round(val_metrics["qwk"], 6),
             "val_macro_f1": round(val_metrics["macro_f1"], 6),
-            "val_composite": round(composite, 6),
             "lr": current_lr,
         }
         log_rows.append(log_row)
@@ -490,7 +504,7 @@ def run_training(
         print(
             f"    Val \u03ba: {qwk:.4f}  AUC: {auc:.4f}  "
             f"Sens: {sens:.4f}  Spec: {spec:.4f}  "
-            f"F1-macro: {mf1:.4f}  Comp: {composite:.4f}  LR: {current_lr:.2e}"
+            f"F1-macro: {mf1:.4f}  LR: {current_lr:.2e}"
         )
 
         f1_parts = []
@@ -499,13 +513,12 @@ def run_training(
             f1_parts.append(f"{sn}={val_metrics.get(f'f1_{cn}', 0.0):.3f}")
         print(f"    Per-class F1:  {'  '.join(f1_parts)}")
 
-        if composite > best_composite:
-            best_composite = composite
+        if val_metrics["qwk"] > best_qwk:
+            best_qwk = val_metrics["qwk"]
             torch.save(model.state_dict(), cfg.ckpt_dir / f"{cfg.exp_name}_best.pth")
             print(
                 f"  ★ New best model saved "
-                f"(composite={best_composite:.4f}  "
-                f"κ={val_metrics['qwk']:.4f}  F1={val_metrics['macro_f1']:.4f})"
+                f"(κ={best_qwk:.4f}  F1={val_metrics['macro_f1']:.4f})"
             )
 
         if scheduler is not None and epoch > cfg.freeze_epochs:
