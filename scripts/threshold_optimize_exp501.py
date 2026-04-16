@@ -72,7 +72,8 @@ def main() -> None:
     cfg = get_config(501)
 
     # --- Load model ---
-    ckpt_path = cfg.ckpt_dir / f"{cfg.exp_name}_best.pth"
+    ckpt_path = Path("checkpoints/exp501_f2_joint_ordsupcon/"
+                      "exp501_f2_joint_ordsupcon_best.pth")
     if not ckpt_path.exists():
         print(f"ERROR: Checkpoint not found at {ckpt_path}")
         sys.exit(1)
