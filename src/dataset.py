@@ -246,7 +246,10 @@ def build_datasets(
         idrid_path = Path(cfg.idrid_processed_dir)
         if idrid_path.exists():
             idrid_labels = load_labels(Path(cfg.idrid_csv))
+            idrid_min_label = getattr(cfg, "idrid_min_label", 3)
             for code, label in idrid_labels.items():
+                if label < idrid_min_label:
+                    continue
                 img_file = idrid_path / f"{code}.png"
                 if img_file.exists():
                     train_labels[code] = label

@@ -115,6 +115,7 @@ class ExpConfig:
 
     # IDRiD supplement (Phase C)
     use_idrid_supplement: bool = False
+    idrid_min_label: int = 3
     idrid_processed_dir: str = ""
     idrid_csv: str = ""
 
