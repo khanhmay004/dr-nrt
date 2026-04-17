@@ -477,10 +477,47 @@ def run_training(
     for epoch in range(1, cfg.total_epochs + 1):
         if epoch == cfg.freeze_epochs + 1:
             unfreeze_all(model)
-            all_params = list(model.parameters())
-            if projector is not None:
-                all_params = all_params + list(projector.parameters())
-            optimizer = torch.optim.Adam(all_params, lr=cfg.lr_finetune, weight_decay=cfg.weight_decay)
+
+            if cfg.layerwise_lr_decay > 0 and cfg.backbone == "resnet50":
+                # Discriminative learning rates: early layers get lower LR
+                decay = cfg.layerwise_lr_decay
+                param_groups = [
+                    {"params": [p for n, p in model.named_parameters()
+                                if n.startswith(("conv1", "bn1", "layer1"))],
+                     "lr": cfg.lr_finetune * (decay ** 4)},
+                    {"params": [p for n, p in model.named_parameters()
+                                if n.startswith("layer2")],
+                     "lr": cfg.lr_finetune * (decay ** 3)},
+                    {"params": [p for n, p in model.named_parameters()
+                                if n.startswith("layer3")],
+                     "lr": cfg.lr_finetune * (decay ** 2)},
+                    {"params": [p for n, p in model.named_parameters()
+                                if n.startswith("layer4")],
+                     "lr": cfg.lr_finetune * decay},
+                    {"params": [p for n, p in model.named_parameters()
+                                if n.startswith(("fc", "avgpool", "gem"))],
+                     "lr": cfg.lr_finetune},
+                ]
+                if projector is not None:
+                    param_groups.append(
+                        {"params": list(projector.parameters()), "lr": cfg.lr_finetune}
+                    )
+                optimizer = torch.optim.Adam(
+                    param_groups, weight_decay=cfg.weight_decay,
+                )
+                logger.info(
+                    f"Layer-wise LR decay={decay:.3f} — "
+                    f"layer1: {cfg.lr_finetune * decay**4:.2e}, "
+                    f"layer2: {cfg.lr_finetune * decay**3:.2e}, "
+                    f"layer3: {cfg.lr_finetune * decay**2:.2e}, "
+                    f"layer4: {cfg.lr_finetune * decay:.2e}, "
+                    f"head: {cfg.lr_finetune:.2e}"
+                )
+            else:
+                all_params = list(model.parameters())
+                if projector is not None:
+                    all_params = all_params + list(projector.parameters())
+                optimizer = torch.optim.Adam(all_params, lr=cfg.lr_finetune, weight_decay=cfg.weight_decay)
 
             if cfg.scheduler == "step":
                 scheduler = torch.optim.lr_scheduler.StepLR(

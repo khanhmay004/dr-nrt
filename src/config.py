@@ -127,6 +127,9 @@ class ExpConfig:
     # pre-trained backbone to load for fine-tuning (skip contrastive Stage 1)
     load_backbone: str = ""
 
+    # layer-wise LR decay for discriminative fine-tuning (0.0 = disabled)
+    layerwise_lr_decay: float = 0.0
+
     @property
     def is_regression(self) -> bool:
         return self.num_outputs == 1
@@ -545,6 +548,98 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         scheduler="cosine_decay",
         total_epochs=80,
         freeze_epochs=5,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # === Phase H: LP-FT for OrdSupCon (docs/05-phase-h.md) ===
+
+    # H0: Pure linear probe on A2 backbone (diagnostic)
+    700: ExpConfig(
+        exp_id=700, name="h0_linear_probe_a2",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=50,
+        freeze_epochs=50,  # never unfreezes — pure linear probe
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # H1: A2 backbone + D1 recipe (fair comparison — the missing experiment)
+    701: ExpConfig(
+        exp_id=701, name="h1_ordsupcon_d1recipe",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_finetune=1e-4,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # H2: A2 backbone + LP-FT (core experiment)
+    702: ExpConfig(
+        exp_id=702, name="h2_lpft_a2",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=20,       # LP-FT: long linear probe
+        lr_finetune=1e-5,       # LP-FT: 10x gentler backbone fine-tuning
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # H3: A2 backbone + LP-FT + layer-wise LR decay
+    703: ExpConfig(
+        exp_id=703, name="h3_lpft_layerwise_a2",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=20,           # LP-FT long linear probe
+        lr_finetune=1e-4,           # base LR for head (layer1 gets decay^4 x this)
+        layerwise_lr_decay=0.316,   # geometric decay per layer group
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # H4: A1-v3 backbone + LP-FT (same-domain OrdSupCon)
+    704: ExpConfig(
+        exp_id=704, name="h4_lpft_a1",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=20,
+        lr_finetune=1e-5,
         load_backbone=str(
             CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
         ),
