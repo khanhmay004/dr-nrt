@@ -85,7 +85,7 @@ def main() -> None:
         sim = feats @ mu.T
         preds = sim.argmax(dim=1).numpy()
         probs = F.softmax(sim, dim=1).numpy()
-        metrics = compute_metrics(y.numpy(), preds, probs=probs)
+        metrics = compute_metrics(y.numpy(), preds, y_pred_probs=probs)
         print(
             f"[{split}] " + "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())
         )
