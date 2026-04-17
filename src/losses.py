@@ -96,7 +96,154 @@ class EMDLoss(nn.Module):
         return emd
 
 
+class SORDLoss(nn.Module):
+    """Soft ORDinal regression loss (Diaz & Marathe, CVPR 2019).
+
+    For target y_i in {0, ..., K-1}, build a soft label
+        p_k proportional to exp(-phi(|y_i - k|))
+    and minimize KL-divergence between predicted softmax and p.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 5,
+        phi: str = "abs",
+        class_weights: torch.Tensor | None = None,
+    ) -> None:
+        super().__init__()
+        self.K = num_classes
+        self.phi = phi
+        if class_weights is not None:
+            self.register_buffer("w", class_weights)
+        else:
+            self.w: torch.Tensor | None = None
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        r = torch.arange(self.K, device=logits.device, dtype=torch.float32)
+        dist = (targets.float().unsqueeze(1) - r.unsqueeze(0)).abs()
+        if self.phi == "square":
+            dist = dist ** 2
+        soft = F.softmax(-dist, dim=1)
+        logp = F.log_softmax(logits, dim=1)
+        loss = -(soft * logp).sum(dim=1)
+        if self.w is not None:
+            loss = loss * self.w[targets]
+        return loss.mean()
+
+
+class LogitAdjustedCE(nn.Module):
+    """Logit Adjustment (Menon et al., ICLR 2021).
+
+    Subtract tau * log(pi_c) from logits during training.
+    Fisher-consistent for balanced error at tau=1.
+    """
+
+    def __init__(
+        self,
+        class_counts: list[int],
+        tau: float = 1.0,
+        label_smoothing: float = 0.0,
+    ) -> None:
+        super().__init__()
+        pi = torch.tensor(class_counts, dtype=torch.float32)
+        pi = pi / pi.sum()
+        self.register_buffer("log_pi", torch.log(pi))
+        self.tau = tau
+        self.ls = label_smoothing
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        adj = logits - self.tau * self.log_pi.unsqueeze(0)
+        return F.cross_entropy(adj, targets, label_smoothing=self.ls)
+
+
+class CLOCLoss(nn.Module):
+    """Multi-margin N-pair contrastive loss for ordinal classification.
+
+    Reference: Pitawela et al., CVPR 2025. Adapted for 5-class DR grading.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 5,
+        temperature: float = 0.07,
+        margin_init: float = 0.5,
+        min_margin_23: float = 0.8,
+        margin_reg: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.K = num_classes
+        self.T = temperature
+        self.deltas = nn.Parameter(torch.full((num_classes - 1,), margin_init))
+        self.min_margin_23 = min_margin_23
+        self.margin_reg = margin_reg
+
+    def cumulative_margin(self, dist: torch.Tensor) -> torch.Tensor:
+        """For |delta_y| = d, margin = sum of deltas[0..d-1]."""
+        c = torch.zeros(self.K, device=dist.device)
+        c[1:] = self.deltas.cumsum(0)
+        return c[dist]
+
+    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        sim = features @ features.T / self.T
+        d = (labels.unsqueeze(0) - labels.unsqueeze(1)).abs()
+        sim_adj = sim - self.cumulative_margin(d)
+        eye = torch.eye(sim.size(0), dtype=torch.bool, device=sim.device)
+        sim_adj = sim_adj.masked_fill(eye, -1e4)
+        pos_mask = (d == 0) & ~eye
+        logp = sim_adj - torch.logsumexp(sim_adj, dim=1, keepdim=True)
+        n_pos = pos_mask.sum(dim=1).clamp(min=1).float()
+        per_anchor = -(logp * pos_mask.float()).sum(dim=1) / n_pos
+        loss = per_anchor.mean()
+        reg = F.relu(self.min_margin_23 - self.deltas[2]) ** 2
+        return loss + self.margin_reg * reg
+
+
+class RnCLoss(nn.Module):
+    """Rank-N-Contrast loss for continuous/ordinal labels (Zha et al., NeurIPS 2023)."""
+
+    def __init__(
+        self,
+        temperature: float = 2.0,
+        label_diff: str = "l1",
+        feature_sim: str = "l2",
+    ) -> None:
+        super().__init__()
+        self.T = temperature
+        self.label_diff = label_diff
+        self.feature_sim = feature_sim
+
+    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        N = features.size(0)
+        if self.feature_sim == "l2":
+            feat_dist = torch.cdist(features, features, p=2) ** 2
+            sim = -feat_dist / self.T
+        else:
+            sim = features @ features.T / self.T
+        if self.label_diff == "l1":
+            ldist = (labels.unsqueeze(0) - labels.unsqueeze(1)).abs().float()
+        else:
+            ldist = (labels.unsqueeze(0) - labels.unsqueeze(1)).float() ** 2
+        eye = torch.eye(N, dtype=torch.bool, device=features.device)
+        loss = torch.tensor(0.0, device=features.device)
+        cnt = 0
+        for i in range(N):
+            order = ldist[i].argsort()
+            order = order[order != i]
+            for rank_j, j in enumerate(order):
+                if rank_j == 0:
+                    continue
+                pos_idx = order[:rank_j]
+                num = torch.exp(sim[i, pos_idx]).sum()
+                denom = num + torch.exp(sim[i, order[rank_j:]]).sum()
+                loss = loss + (-torch.log(num / denom + 1e-12))
+                cnt += 1
+        return loss / cnt if cnt > 0 else torch.tensor(0.0, device=features.device)
+
+
 def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
+    if cfg.loss_type == "none":
+        return nn.Identity()
+
     if cfg.loss_type == "ce":
         return nn.CrossEntropyLoss()
 
@@ -112,13 +259,26 @@ def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
         return nn.SmoothL1Loss()
 
     if cfg.loss_type == "corn":
+        assert cfg.num_outputs == 5, f"CORN assumes num_outputs=5, got {cfg.num_outputs}"
         return CORNLoss(num_classes=NUM_CLASSES)
 
     if cfg.loss_type == "cumlink":
+        assert cfg.num_outputs == 5, f"CumLink assumes num_outputs=5, got {cfg.num_outputs}"
         return CumulativeLinkLoss(num_classes=NUM_CLASSES)
 
     if cfg.loss_type == "emd":
         return EMDLoss(num_classes=NUM_CLASSES)
+
+    if cfg.loss_type == "sord":
+        w = compute_class_weights(device) if cfg.use_class_weights else None
+        return SORDLoss(num_classes=NUM_CLASSES, class_weights=w)
+
+    if cfg.loss_type == "la_ce":
+        return LogitAdjustedCE(
+            class_counts=CLASS_COUNTS,
+            tau=cfg.la_ce_tau,
+            label_smoothing=cfg.label_smoothing,
+        )
 
     raise ValueError(f"Unknown loss type: {cfg.loss_type}")
 

@@ -122,6 +122,11 @@ class ExpConfig:
     # head regularization
     head_dropout: float = 0.0  # dropout probability before FC (0.0 = disabled)
 
+    # head type: "linear" (default FC) or "ordinal_prototype" (cosine classifier on 1-D axis)
+    head_type: str = "linear"
+    proto_scale: float = 20.0
+    proto_learnable_axis: bool = True
+
     # checkpoint to load backbone from (for eval-only or contrastive init)
     load_checkpoint: str = ""
 
@@ -130,6 +135,31 @@ class ExpConfig:
 
     # layer-wise LR decay for discriminative fine-tuning (0.0 = disabled)
     layerwise_lr_decay: float = 0.0
+
+    # L2-SP regularizer strength (anchor backbone toward pretrained weights)
+    l2_sp_alpha: float = 0.0
+
+    # Logit-Adjusted CE temperature
+    la_ce_tau: float = 1.0
+
+    # SWAD (dense weight averaging)
+    use_swad: bool = False
+    swad_N_s: int = 3
+    swad_N_e: int = 6
+
+    # contrastive loss variant for joint training
+    contrastive_loss_type: str = "ordsupcon"  # ordsupcon | cloc | rnc
+    cloc_margin_init: float = 0.5
+    cloc_min_margin_23: float = 0.8
+
+    # FLYP continued contrastive fine-tuning
+    use_flyp_finetune: bool = False
+    contrastive_stratified: bool = False
+    contrastive_batch_per_class: int = 8
+
+    # eval helpers (used by scripts/eval_checkpoint.py)
+    threshold_strategy: str | None = None
+    eval_suffix: str = ""
 
     @property
     def is_regression(self) -> bool:
@@ -644,6 +674,210 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         load_backbone=str(
             CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
         ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # === Phase I: Rescue Plan (docs/07-improve-model.md) ===
+
+    # I1: EMD² replaces Focal on D1 recipe
+    802: ExpConfig(
+        exp_id=802, name="i1_emd_on_d1_recipe",
+        aug_level=2, loss_type="emd", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_head=1e-3, lr_finetune=1e-4,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I2: SORD soft-label loss on D1 recipe
+    803: ExpConfig(
+        exp_id=803, name="i2_sord_on_d1_recipe",
+        aug_level=2, loss_type="sord", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_head=1e-3, lr_finetune=1e-4,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I3: SWAD on D1
+    804: ExpConfig(
+        exp_id=804, name="i3_swad_on_d1",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_head=1e-3, lr_finetune=1e-4,
+        use_swa=False,
+        use_swad=True,
+        swad_N_s=3, swad_N_e=6,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I4: L2-SP anchoring on A2 backbone with D1 recipe
+    805: ExpConfig(
+        exp_id=805, name="i4_l2sp_a2_d1recipe",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_head=1e-3, lr_finetune=1e-4,
+        l2_sp_alpha=1e-3,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I5: Ordinal prototype head on A2 backbone with EMD loss
+    806: ExpConfig(
+        exp_id=806, name="i5_prototype_head_a2_emd",
+        aug_level=2, loss_type="emd", use_class_weights=False,
+        use_gem=True,
+        head_type="ordinal_prototype",
+        head_dropout=0.0,
+        proto_scale=20.0,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_head=1e-3, lr_finetune=1e-4,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I6: Gunel SCL + LA-CE (high-λ joint training)
+    807: ExpConfig(
+        exp_id=807, name="i6_gunel_lace_lambda07",
+        aug_level=2, loss_type="la_ce", use_class_weights=False,
+        la_ce_tau=1.0,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_finetune=5e-5, batch_size=24,
+        use_joint_contrastive=True,
+        joint_contrastive_weight=0.7,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+        joint_contrastive_warmup=8,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I7: CLOC multi-margin N-pair loss
+    808: ExpConfig(
+        exp_id=808, name="i7_cloc_margin_joint",
+        aug_level=2, loss_type="la_ce", use_class_weights=False,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_finetune=5e-5, batch_size=24,
+        use_joint_contrastive=True,
+        contrastive_loss_type="cloc",
+        joint_contrastive_weight=0.5,
+        contrastive_temperature=0.07,
+        cloc_margin_init=0.5,
+        cloc_min_margin_23=0.8,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I8: FLYP continued contrastive fine-tuning + NCM readout
+    809: ExpConfig(
+        exp_id=809, name="i8_flyp_a2_aptos_ncm",
+        aug_level=2, loss_type="none",
+        use_gem=True,
+        use_contrastive_pretrain=False,
+        use_flyp_finetune=True,
+        contrastive_epochs=35,
+        contrastive_lr=5e-6,
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+        contrastive_data="aptos",
+        contrastive_stratified=True,
+        contrastive_batch_per_class=8,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs" / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        total_epochs=0,
+        freeze_epochs=0,
+    ),
+
+    # I9: Kitchen-sink combined recipe
+    810: ExpConfig(
+        exp_id=810, name="i9_kitchen_sink",
+        aug_level=2, loss_type="la_ce", use_class_weights=False,
+        la_ce_tau=1.0,
+        use_gem=True,
+        head_type="ordinal_prototype",
+        head_dropout=0.0,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_finetune=5e-5, batch_size=24,
+        use_joint_contrastive=True,
+        joint_contrastive_weight=0.7,
+        contrastive_loss_type="ordsupcon",
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+        joint_contrastive_warmup=8,
+        l2_sp_alpha=1e-3,
+        use_swad=True, swad_N_s=3, swad_N_e=6,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # I10: Rank-N-Contrast diagnostic (alternative to OrdSupCon)
+    811: ExpConfig(
+        exp_id=811, name="i10_rnc_aptos_pretrain",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        use_contrastive_pretrain=True,
+        contrastive_epochs=40,
+        contrastive_lr=1e-3,
+        contrastive_temperature=2.0,
+        contrastive_proj_dim=128,
+        contrastive_data="aptos",
+        contrastive_loss_type="rnc",
+        total_epochs=1,
+        freeze_epochs=1,
         oversample_target=1000,
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),

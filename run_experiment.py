@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from src.config import get_config
 from src.dataset import build_datasets, build_eyepacs_dataset, ContrastiveDRDataset
 from src.transforms import get_train_transform, get_val_transform
-from src.train import run_training, evaluate_on_test, run_contrastive_pretraining
+from src.train import run_training, evaluate_on_test, run_contrastive_pretraining, run_flyp_finetuning
 from src.pseudo_label import generate_pseudo_labels, finetune_with_pseudo
 from src.ensemble import build_ensemble_configs, run_ensemble_inference
 from src.models import build_model
@@ -156,6 +156,44 @@ def main() -> None:
     elif cfg.load_backbone:
         pretrained_backbone_sd = torch.load(cfg.load_backbone, weights_only=True)
         logger.info(f"Loaded backbone from {cfg.load_backbone}")
+
+    # --- FLYP: continued contrastive fine-tuning (no classifier training) ---
+    if cfg.use_flyp_finetune:
+        contrastive_ds = ContrastiveDRDataset(train_ds, transform_train)
+        logger.info(f"FLYP contrastive data: APTOS ({len(train_ds)} images)")
+
+        if cfg.contrastive_stratified:
+            from torch.utils.data import WeightedRandomSampler as WRS
+            c_targets = [s[1] for s in contrastive_ds.base_dataset.samples]
+            c_counts = [0] * 5
+            for t in c_targets:
+                c_counts[t] += 1
+            c_weights = [1.0 / c_counts[t] for t in c_targets]
+            flyp_sampler = WRS(c_weights, num_samples=len(c_targets), replacement=True)
+            flyp_batch = cfg.contrastive_batch_per_class * 5
+            flyp_loader = DataLoader(
+                contrastive_ds, batch_size=flyp_batch,
+                shuffle=False, sampler=flyp_sampler,
+                num_workers=args.workers, pin_memory=True,
+            )
+        else:
+            flyp_loader = DataLoader(
+                contrastive_ds, batch_size=cfg.batch_size,
+                shuffle=True,
+                num_workers=args.workers, pin_memory=True,
+            )
+
+        run_flyp_finetuning(cfg, flyp_loader, device)
+        del flyp_loader, contrastive_ds
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        logger.info(f"=== Experiment {cfg.exp_name} Complete (FLYP) ===")
+        logger.info("Use scripts/ncm_eval.py to evaluate the saved backbone.")
+        return
+
+    if cfg.total_epochs == 0:
+        logger.info(f"total_epochs=0 — skipping supervised training for {cfg.exp_name}")
+        return
 
     model = run_training(cfg, train_loader, val_loader, device, pretrained_backbone_sd)
 

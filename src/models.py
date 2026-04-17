@@ -21,6 +21,34 @@ class GeM(nn.Module):
         ).pow(1.0 / self.p)
 
 
+class OrdinalPrototypeHead(nn.Module):
+    """Cosine classifier with K prototypes on a learnable 1-D axis."""
+
+    def __init__(
+        self,
+        feat_dim: int = 2048,
+        num_classes: int = 5,
+        scale: float = 20.0,
+        learnable_axis: bool = True,
+    ) -> None:
+        super().__init__()
+        self.K = num_classes
+        self.scale = scale
+        v = torch.randn(feat_dim)
+        v = v / v.norm().clamp(min=1e-8)
+        self.axis = nn.Parameter(v, requires_grad=learnable_axis)
+
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        feat_n = F.normalize(feat, dim=1)
+        axis_n = F.normalize(self.axis, dim=0)
+        ks = torch.arange(self.K, device=feat.device, dtype=feat.dtype)
+        offsets = ks - (self.K - 1) / 2
+        mu = offsets.unsqueeze(1) * axis_n.unsqueeze(0)
+        mu_n = F.normalize(mu, dim=1)
+        logits = self.scale * (feat_n @ mu_n.T)
+        return logits
+
+
 class ProjectionHead(nn.Module):
     """MLP projection head for contrastive learning.
 
@@ -66,7 +94,14 @@ def _build_resnet50(cfg: ExpConfig) -> nn.Module:
     if cfg.loss_type in ("corn", "cumlink"):
         actual_outputs = cfg.num_outputs - 1
 
-    if cfg.head_dropout > 0.0:
+    if cfg.head_type == "ordinal_prototype":
+        model.fc = OrdinalPrototypeHead(
+            feat_dim=in_features,
+            num_classes=cfg.num_outputs,
+            scale=cfg.proto_scale,
+            learnable_axis=cfg.proto_learnable_axis,
+        )
+    elif cfg.head_dropout > 0.0:
         model.fc = nn.Sequential(
             nn.Dropout(p=cfg.head_dropout),
             nn.Linear(in_features, actual_outputs),

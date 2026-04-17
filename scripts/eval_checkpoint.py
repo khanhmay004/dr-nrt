@@ -10,13 +10,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from torch.utils.data import DataLoader
 from src.config import get_config
 from src.dataset import build_datasets
 from src.models import build_model
 from src.train import evaluate_on_test
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", type=int, required=True)
     ap.add_argument("--ckpt", type=str, required=True)
@@ -28,7 +29,7 @@ def main():
     args = ap.parse_args()
 
     cfg = get_config(args.exp)
-    cfg.use_tta = False  # rescue-phase policy
+    cfg.use_tta = False
     cfg.use_optimized_thresholds = args.thresh != "argmax"
     cfg.threshold_strategy = args.thresh if args.thresh != "argmax" else None
     cfg.eval_suffix = args.suffix
@@ -36,10 +37,22 @@ def main():
     _, val_ds, test_ds = build_datasets(cfg)
     model = build_model(cfg).to(args.device)
     sd = torch.load(args.ckpt, map_location=args.device)
-    model.load_state_dict(sd, strict=False)  # strict=False for NCM head swap
+    model.load_state_dict(sd, strict=False)
     model.eval()
 
-    evaluate_on_test(model, test_ds, val_ds, cfg, args.device)
+    test_loader = DataLoader(
+        test_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=4, pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=4, pin_memory=True,
+    )
+
+    metrics = evaluate_on_test(
+        model, test_ds, test_loader, cfg, torch.device(args.device),
+        val_loader=val_loader if cfg.use_optimized_thresholds else None,
+    )
+    for k, v in metrics.items():
+        print(f"  {k}: {v:.4f}")
 
 
 if __name__ == "__main__":

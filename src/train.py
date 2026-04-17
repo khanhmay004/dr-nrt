@@ -33,6 +33,49 @@ from src.tta import predict_no_tta, predict_with_tta
 logger = logging.getLogger(__name__)
 
 
+class SWADAveragedModel:
+    """Dense weight averaging with plateau-triggered start/stop (Cha et al., NeurIPS 2021)."""
+
+    def __init__(self, model: nn.Module, N_s: int = 3, N_e: int = 6) -> None:
+        self.avg = AveragedModel(model)
+        self.N_s = N_s
+        self.N_e = N_e
+        self.loss_history: list[float] = []
+        self.active = False
+        self.deactivated = False
+        self.n_updates = 0
+
+    def step(self, model: nn.Module, val_loss: float) -> None:
+        self.loss_history.append(val_loss)
+        if not self.active and not self.deactivated:
+            if (
+                len(self.loss_history) > self.N_s
+                and min(self.loss_history[-self.N_s :])
+                >= min(self.loss_history[: -self.N_s])
+            ):
+                self.active = True
+                logger.info(f"SWAD activated at epoch {len(self.loss_history)}")
+        if self.active:
+            self.avg.update_parameters(model)
+            self.n_updates += 1
+            if (
+                len(self.loss_history) > self.N_e
+                and self.loss_history[-1]
+                > min(self.loss_history[-self.N_e : -1])
+            ):
+                self.active = False
+                self.deactivated = True
+                logger.info(
+                    f"SWAD deactivated at epoch {len(self.loss_history)} "
+                    f"after {self.n_updates} updates"
+                )
+
+    def finalize(self, train_loader: DataLoader, device: torch.device) -> AveragedModel:
+        if self.n_updates > 0:
+            update_bn(train_loader, self.avg, device=device)
+        return self.avg
+
+
 def run_contrastive_pretraining(
     cfg: ExpConfig,
     contrastive_loader: DataLoader,
@@ -40,16 +83,21 @@ def run_contrastive_pretraining(
 ) -> dict[str, torch.Tensor]:
     """Run ordinal contrastive pre-training. Returns backbone state_dict (no projector)."""
     from src.models import build_contrastive_model
-    from src.losses import OrdSupConLoss
+    from src.losses import OrdSupConLoss, RnCLoss
 
     backbone, projector = build_contrastive_model(cfg)
     backbone = backbone.to(device)
     projector = projector.to(device)
 
-    criterion = OrdSupConLoss(
-        num_classes=NUM_CLASSES,
-        temperature=cfg.contrastive_temperature,
-    )
+    if cfg.contrastive_loss_type == "rnc":
+        criterion: nn.Module = RnCLoss(
+            temperature=cfg.contrastive_temperature,
+        )
+    else:
+        criterion = OrdSupConLoss(
+            num_classes=NUM_CLASSES,
+            temperature=cfg.contrastive_temperature,
+        )
 
     all_params = list(backbone.parameters()) + list(projector.parameters())
     optimizer = torch.optim.Adam(all_params, lr=cfg.contrastive_lr, weight_decay=cfg.weight_decay)
@@ -187,6 +235,26 @@ def compute_mixed_loss(
     return lam * criterion(outputs, y_a) + (1 - lam) * criterion(outputs, y_b)
 
 
+def _apply_l2_sp(
+    model: nn.Module,
+    ref_sd: dict[str, torch.Tensor],
+    alpha: float,
+    device: torch.device,
+) -> None:
+    """Accumulate L2-SP gradient: penalizes backbone drift from pretrained weights."""
+    sp = torch.zeros((), device=device)
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.startswith(("fc.", "classifier.", "projector.")):
+            continue
+        if name not in ref_sd:
+            continue
+        ref = ref_sd[name].to(device, non_blocking=True)
+        sp = sp + ((p - ref) ** 2).sum()
+    (alpha * sp).backward()
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -199,6 +267,7 @@ def train_one_epoch(
     projector: nn.Module | None = None,
     contrastive_criterion: nn.Module | None = None,
     scaler: torch.amp.GradScaler | None = None,
+    pretrained_ref_sd: dict[str, torch.Tensor] | None = None,
 ) -> tuple[float, float]:
     model.train()
     if projector is not None:
@@ -254,10 +323,14 @@ def train_one_epoch(
             optimizer.zero_grad()
             if use_amp and scaler is not None:
                 scaler.scale(loss).backward()
+                if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
+                    _apply_l2_sp(model, pretrained_ref_sd, cfg.l2_sp_alpha, device)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
+                    _apply_l2_sp(model, pretrained_ref_sd, cfg.l2_sp_alpha, device)
                 optimizer.step()
 
             total_loss += loss.item() * view1.size(0)
@@ -296,6 +369,8 @@ def train_one_epoch(
 
             optimizer.zero_grad()
             loss.backward()
+            if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
+                _apply_l2_sp(model, pretrained_ref_sd, cfg.l2_sp_alpha, device)
             optimizer.step()
 
             total_loss += loss.item() * images.size(0)
@@ -412,16 +487,26 @@ def run_training(
     contrastive_criterion = None
     if cfg.use_joint_contrastive:
         from src.models import ProjectionHead
-        from src.losses import OrdSupConLoss
-        in_features = 2048  # ResNet-50 backbone output dim
+        in_features = 2048
         projector = ProjectionHead(
             in_dim=in_features, hidden_dim=512, out_dim=cfg.contrastive_proj_dim,
         ).to(device)
-        contrastive_criterion = OrdSupConLoss(
-            num_classes=NUM_CLASSES, temperature=cfg.contrastive_temperature,
-        )
+        if cfg.contrastive_loss_type == "cloc":
+            from src.losses import CLOCLoss
+            contrastive_criterion = CLOCLoss(
+                num_classes=NUM_CLASSES,
+                temperature=cfg.contrastive_temperature,
+                margin_init=cfg.cloc_margin_init,
+                min_margin_23=cfg.cloc_min_margin_23,
+            )
+        else:
+            from src.losses import OrdSupConLoss
+            contrastive_criterion = OrdSupConLoss(
+                num_classes=NUM_CLASSES, temperature=cfg.contrastive_temperature,
+            )
         logger.info(
-            f"Joint contrastive enabled — λ={cfg.joint_contrastive_weight}, "
+            f"Joint contrastive enabled — type={cfg.contrastive_loss_type}, "
+            f"λ={cfg.joint_contrastive_weight}, "
             f"τ={cfg.contrastive_temperature}, proj_dim={cfg.contrastive_proj_dim}"
         )
 
@@ -459,6 +544,18 @@ def run_training(
     if cfg.use_swa:
         swa_model = AveragedModel(model).to(device)
 
+    swad: SWADAveragedModel | None = None
+    if cfg.use_swad:
+        swad = SWADAveragedModel(model, N_s=cfg.swad_N_s, N_e=cfg.swad_N_e)
+        swad.avg = swad.avg.to(device)
+        logger.info(f"SWAD enabled — N_s={cfg.swad_N_s}, N_e={cfg.swad_N_e}")
+
+    # L2-SP: load reference weights for backbone anchoring
+    pretrained_ref_sd: dict[str, torch.Tensor] | None = None
+    if cfg.l2_sp_alpha > 0 and cfg.load_backbone:
+        pretrained_ref_sd = torch.load(cfg.load_backbone, map_location="cpu")
+        logger.info(f"L2-SP enabled — α={cfg.l2_sp_alpha}, anchor={cfg.load_backbone}")
+
     # AMP scaler for joint contrastive path (halves VRAM for 2-view forward)
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" and cfg.use_joint_contrastive else None
 
@@ -478,7 +575,9 @@ def run_training(
         if epoch == cfg.freeze_epochs + 1:
             unfreeze_all(model)
 
-            if cfg.layerwise_lr_decay > 0 and cfg.backbone == "resnet50":
+            if cfg.layerwise_lr_decay > 0:
+                assert cfg.backbone == "resnet50", \
+                    f"layerwise_lr_decay only supports resnet50, got {cfg.backbone}"
                 # Discriminative learning rates: early layers get lower LR
                 decay = cfg.layerwise_lr_decay
                 param_groups = [
@@ -538,7 +637,7 @@ def run_training(
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device, cfg, epoch, cfg.total_epochs,
             projector=projector, contrastive_criterion=contrastive_criterion,
-            scaler=scaler,
+            scaler=scaler, pretrained_ref_sd=pretrained_ref_sd,
         )
 
         if cfg.use_swa and swa_model is not None and epoch >= cfg.swa_start_epoch:
@@ -547,6 +646,9 @@ def run_training(
         val_loss, val_acc, val_metrics = validate(
             model, val_loader, criterion, device, cfg, epoch, cfg.total_epochs,
         )
+
+        if swad is not None:
+            swad.step(model, val_loss)
         current_lr = optimizer.param_groups[0]["lr"]
 
         composite = 0.6 * val_metrics["qwk"] + 0.4 * val_metrics["macro_f1"]
@@ -615,6 +717,15 @@ def run_training(
             cfg.ckpt_dir / f"{cfg.exp_name}_swa.pth",
         )
         return swa_model.module  # type: ignore[return-value]
+
+    if swad is not None and swad.n_updates > 0:
+        swad_avg = swad.finalize(train_loader, device)
+        torch.save(
+            swad_avg.module.state_dict(),
+            cfg.ckpt_dir / f"{cfg.exp_name}_swad.pth",
+        )
+        logger.info(f"SWAD model saved ({swad.n_updates} weight snapshots averaged)")
+        return swad_avg.module  # type: ignore[return-value]
 
     model.load_state_dict(torch.load(cfg.ckpt_dir / f"{cfg.exp_name}_best.pth", weights_only=True))
     return model
@@ -697,3 +808,113 @@ def evaluate_on_test(
         f"Acc: {metrics['accuracy']:.4f}"
     )
     return metrics
+
+
+def run_flyp_finetuning(
+    cfg: ExpConfig,
+    contrastive_loader: DataLoader,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    """Continue OrdSupCon training on APTOS (no classifier head).
+
+    Saves a new backbone checkpoint; head is applied separately (NCM or prototype).
+    """
+    from src.models import build_contrastive_model, ProjectionHead
+    from src.losses import OrdSupConLoss, RnCLoss
+
+    backbone, projector = build_contrastive_model(cfg)
+    backbone = backbone.to(device)
+    projector = projector.to(device)
+
+    if cfg.load_backbone:
+        sd = torch.load(cfg.load_backbone, map_location=device)
+        missing, unexpected = backbone.load_state_dict(sd, strict=False)
+        logger.info(
+            f"FLYP: loaded backbone — missing={len(missing)}, unexpected={len(unexpected)}"
+        )
+
+    if cfg.contrastive_loss_type == "rnc":
+        criterion: nn.Module = RnCLoss(
+            temperature=cfg.contrastive_temperature,
+        )
+    else:
+        criterion = OrdSupConLoss(
+            num_classes=NUM_CLASSES,
+            temperature=cfg.contrastive_temperature,
+        )
+
+    all_params = list(backbone.parameters()) + list(projector.parameters())
+    optimizer = torch.optim.Adam(
+        all_params, lr=cfg.contrastive_lr, weight_decay=cfg.weight_decay,
+    )
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg.contrastive_epochs, eta_min=1e-7,
+    )
+
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
+
+    cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
+    cfg.results_dir.mkdir(parents=True, exist_ok=True)
+    log_path = cfg.results_dir / f"{cfg.exp_name}_flyp_log.csv"
+    log_rows: list[dict[str, float]] = []
+
+    logger.info(f"FLYP fine-tuning for {cfg.contrastive_epochs} epochs at lr={cfg.contrastive_lr}")
+
+    for epoch in range(1, cfg.contrastive_epochs + 1):
+        backbone.train()
+        projector.train()
+        total_loss = 0.0
+        total_samples = 0
+
+        pbar = tqdm(
+            contrastive_loader,
+            desc=f"FLYP Epoch {epoch}/{cfg.contrastive_epochs}",
+            leave=True,
+        )
+        for batch in pbar:
+            view1, view2, targets, _codes = batch
+            view1 = view1.to(device)
+            view2 = view2.to(device)
+            targets = targets.to(device)
+
+            images = torch.cat([view1, view2], dim=0)
+            labels = torch.cat([targets, targets], dim=0)
+
+            optimizer.zero_grad()
+
+            if scaler is not None:
+                with torch.amp.autocast("cuda"):
+                    features = backbone(images)
+                features = features.float()
+                z = projector(features)
+                loss = criterion(z, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                features = backbone(images)
+                z = projector(features)
+                loss = criterion(z, labels)
+                loss.backward()
+                optimizer.step()
+
+            total_loss += loss.item() * view1.size(0)
+            total_samples += view1.size(0)
+            pbar.set_postfix(loss=f"{total_loss / total_samples:.4f}")
+
+        sched.step()
+        avg_loss = total_loss / max(total_samples, 1)
+        lr = optimizer.param_groups[0]["lr"]
+        log_rows.append({"epoch": epoch, "flyp_loss": round(avg_loss, 6), "lr": lr})
+        print(
+            f"\nFLYP Epoch {epoch}/{cfg.contrastive_epochs}  "
+            f"loss: {avg_loss:.4f}  lr: {lr:.2e}"
+        )
+
+    pd.DataFrame(log_rows).to_csv(log_path, index=False)
+
+    backbone_ckpt = cfg.ckpt_dir / f"{cfg.exp_name}_backbone.pth"
+    torch.save(backbone.state_dict(), backbone_ckpt)
+    logger.info(f"FLYP backbone saved: {backbone_ckpt}")
+
+    return backbone.state_dict()
