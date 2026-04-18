@@ -322,15 +322,24 @@ def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
 
 
 class OrdSupConLoss(nn.Module):
-    """Ordinal-Aware Supervised Contrastive Loss.
+    """Ordinal-Aware Supervised Contrastive Loss (canonical Khosla form).
 
-    W(i,j) = 1 - |g_i - g_j| / (K - 1).  K = num_classes.
+    Positives are same-class and adjacent-class pairs, weighted by
+    W(i,j) = 1 - |g_i - g_j| / (K - 1). Distant classes (|g_i - g_j| >= 2)
+    are treated as pure negatives (repulsion only via the denominator).
+    This matches Khosla SupCon 2020 semantics: negatives repel uniformly.
     """
 
-    def __init__(self, num_classes: int = 5, temperature: float = 0.07) -> None:
+    def __init__(
+        self,
+        num_classes: int = 5,
+        temperature: float = 0.07,
+        pos_distance: int = 1,
+    ) -> None:
         super().__init__()
         self.temperature = temperature
         self.num_classes = num_classes
+        self.pos_distance = pos_distance  # max label distance considered a positive
 
     def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """
@@ -353,16 +362,21 @@ class OrdSupConLoss(nn.Module):
         self_mask = torch.eye(batch_size, dtype=torch.bool, device=device)
         sim.masked_fill_(self_mask, -1e4)  # FP16-safe (max half ≈ 65504)
 
-        # Log-softmax over the denominator (all negatives + positives)
+        # Log-softmax over the denominator — uniform over all non-self pairs,
+        # which is the canonical SupCon denominator. Negatives repel uniformly.
         log_prob = sim - torch.logsumexp(sim, dim=1, keepdim=True)
 
-        # Weight the log-probabilities and mask out self
-        W_masked = W.clone()
-        W_masked.masked_fill_(self_mask, 0.0)
+        # Positive mask: same or adjacent class only. Distant-class pairs are
+        # pure negatives (zero weight in numerator; they still repel via the
+        # denominator). Previous bug: W alone gave soft positive weight to all
+        # pairs incl. distant negatives — breaking negative repulsion.
+        pos_mask = (dist <= self.pos_distance).float()
+        pos_mask.masked_fill_(self_mask, 0.0)
+        W_pos = W * pos_mask  # non-zero only for same/adjacent pairs
 
-        # Per-anchor normalisation Z_i = sum_{j!=i} W(i,j)
-        Z = W_masked.sum(dim=1, keepdim=True).clamp(min=1e-8)
+        # Per-anchor normalisation: sum of positive weights
+        Z = W_pos.sum(dim=1, keepdim=True).clamp(min=1e-8)
 
-        # Clamp log_prob to prevent 0 * (-inf) = NaN when W=0 for distant grades
-        loss = -(W_masked * log_prob.clamp(min=-100)).sum(dim=1) / Z.squeeze(1)
+        # -sum_j [W_pos_ij * log_prob_ij] / Z_i. Clamp guards 0 * -inf = NaN.
+        loss = -(W_pos * log_prob.clamp(min=-100)).sum(dim=1) / Z.squeeze(1)
         return loss.mean()

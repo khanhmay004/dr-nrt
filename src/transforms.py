@@ -70,10 +70,13 @@ def get_val_transform() -> None:
 
 
 def get_tta_transforms() -> list[A.Compose]:
+    # VerticalFlip removed — fundus anatomy is biologically asymmetric
+    # (optic disc and macula have fixed superior/inferior orientation), so
+    # vertical flip produces non-physical views that can drift predictions.
+    # H-flip is safe because left/right eyes are near-mirror-symmetric.
     return [
         A.Compose([]),  # original
         A.Compose([A.HorizontalFlip(p=1.0)]),
-        A.Compose([A.VerticalFlip(p=1.0)]),
         A.Compose([A.Rotate(limit=(90, 90), p=1.0, border_mode=0)]),
         A.Compose([A.Rotate(limit=(180, 180), p=1.0, border_mode=0)]),
         A.Compose([A.Rotate(limit=(270, 270), p=1.0, border_mode=0)]),

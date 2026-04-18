@@ -139,6 +139,12 @@ class ExpConfig:
     # L2-SP regularizer strength (anchor backbone toward pretrained weights)
     l2_sp_alpha: float = 0.0
 
+    # Keep BatchNorm in .eval() mode for the first N epochs after unfreeze so
+    # running stats don't drift from pretrained values while the backbone is
+    # still aligning to the target distribution. Kumar et al. ICLR 2022 (LP-FT)
+    # and medical-imaging fine-tuning best practice. 0 = disabled.
+    freeze_bn_epochs: int = 0
+
     # Logit-Adjusted CE temperature
     la_ce_tau: float = 1.0
 
@@ -883,6 +889,55 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         freeze_epochs=1,
         oversample_target=1000,
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
+    # exp900 — OrdSupCon champion recipe (plan v2).
+    # Combines: Stage-0 bugfixes (positive-only ordinal weighting, projector
+    # trained during freeze_epochs, TTA on val+test, no vertical flip in TTA,
+    # BN freeze 3 ep after unfreeze, layer-wise LR decay 0.75) + LP-FT protocol
+    # (Kumar ICLR 2022) + A2 OrdSupCon EyePACS backbone + joint OrdSupCon aux
+    # with warmup λ → 0.05 + L2-SP anchor (α=1e-4). Target: QWK ≥ 0.925 on test.
+    900: ExpConfig(
+        exp_id=900, name="ordsupcon_champion",
+        # D1 backbone foundation
+        backbone="resnet50",
+        aug_level=2, loss_type="focal", focal_gamma=2.0,
+        use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        batch_size=32,
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+        # LP-FT protocol
+        freeze_epochs=10,           # longer LP phase for contrastive backbone
+        lr_head=1e-3,
+        lr_finetune=5e-5,           # smaller: contrastive features are fragile
+        layerwise_lr_decay=0.75,    # Stage-0 fix #6
+        freeze_bn_epochs=3,         # Stage-0 fix #5
+        # A2 OrdSupCon backbone (EyePACS pretraining, 20ep batch=32, temp=0.07)
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp200_a2_ordsupcon_eyepacs"
+            / "exp200_a2_ordsupcon_eyepacs_backbone.pth"
+        ),
+        # Joint OrdSupCon with FIXED loss (Stage-0 fix #1 — positive-only
+        # ordinal weighting). Warmup starts AFTER freeze_epochs (λ=0 during
+        # freeze is moot — projector trains at full λ per fix #2).
+        use_joint_contrastive=True,
+        joint_contrastive_weight=0.05,
+        joint_contrastive_warmup=15,       # ramp λ over epochs 11..25
+        detach_contrastive_backbone=False,
+        contrastive_loss_type="ordsupcon",
+        contrastive_temperature=0.07,
+        contrastive_proj_dim=128,
+        # Light weight-space anchor
+        l2_sp_alpha=1e-4,
+        # Inference: TTA on val+test (Stage-0 fixes #3, #4). Threshold opt is
+        # run post-hoc via scripts/threshold_optimize.py --tta in Stage 2a.
+        use_tta=True,
+        use_optimized_thresholds=False,
     ),
 }
 

@@ -285,6 +285,25 @@ def train_one_epoch(
     model.train()
     if projector is not None:
         projector.train()
+
+    # BN freeze window: keep BatchNorm in eval mode (frozen running stats) for
+    # the first `freeze_bn_epochs` epochs after the backbone unfreezes. Prevents
+    # the just-unfrozen backbone from corrupting pretrained BN statistics before
+    # the weights have stabilised (Kumar et al. ICLR 2022 LP-FT).
+    if cfg.freeze_bn_epochs > 0:
+        bn_freeze_until = cfg.freeze_epochs + cfg.freeze_bn_epochs
+        if epoch <= bn_freeze_until:
+            bn_count = 0
+            for m in model.modules():
+                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                    m.eval()
+                    bn_count += 1
+            if epoch == cfg.freeze_epochs + 1 and bn_count > 0:
+                logger.info(
+                    f"BN frozen (eval mode) for epochs {cfg.freeze_epochs + 1}"
+                    f"..{bn_freeze_until} ({bn_count} BN layers)"
+                )
+
     total_loss = 0.0
     correct = 0
     total_samples = 0
@@ -327,9 +346,16 @@ def train_one_epoch(
                     labels_2x = torch.cat([targets, targets], dim=0)
                     loss_con = contrastive_criterion(z, labels_2x)
 
-                    # Compute effective λ with optional warmup
-                    if cfg.joint_contrastive_warmup > 0 and epoch <= cfg.freeze_epochs + cfg.joint_contrastive_warmup:
-                        warmup_progress = max(0.0, (epoch - cfg.freeze_epochs)) / cfg.joint_contrastive_warmup
+                    # Compute effective λ with optional warmup.
+                    # During freeze_epochs, backbone is frozen but projector is not;
+                    # train projector at full λ on frozen features so that when the
+                    # backbone unfreezes, the projector is already a decent
+                    # feature→128-d map (prevents joint-stage instability — the
+                    # fc head is unaffected because L_con has no path to fc).
+                    if epoch <= cfg.freeze_epochs:
+                        effective_lambda = cfg.joint_contrastive_weight
+                    elif cfg.joint_contrastive_warmup > 0 and epoch <= cfg.freeze_epochs + cfg.joint_contrastive_warmup:
+                        warmup_progress = (epoch - cfg.freeze_epochs) / cfg.joint_contrastive_warmup
                         effective_lambda = cfg.joint_contrastive_weight * warmup_progress
                     else:
                         effective_lambda = cfg.joint_contrastive_weight
@@ -782,7 +808,7 @@ def evaluate_on_test(
 
     if cfg.is_regression:
         if cfg.use_tta:
-            raw_preds, codes = predict_with_tta(model, test_dataset, device)
+            raw_preds, codes = predict_with_tta(model, test_dataset, device, is_regression=True)
             targets = np.array([test_dataset.samples[i][1] for i in range(len(test_dataset))])
         else:
             raw_preds, targets, codes = predict_no_tta(model, test_loader, device, is_regression=True)
@@ -792,7 +818,7 @@ def evaluate_on_test(
             rounder = OptimizedRounder()
             if cfg.use_tta:
                 val_ds: DRDataset = val_loader.dataset  # type: ignore[assignment]
-                val_preds, _ = predict_with_tta(model, val_ds, device)
+                val_preds, _ = predict_with_tta(model, val_ds, device, is_regression=True)
                 val_targets = np.array([val_ds.samples[i][1] for i in range(len(val_ds))])
             else:
                 val_preds, val_targets, _ = predict_no_tta(model, val_loader, device, is_regression=True)
@@ -802,7 +828,14 @@ def evaluate_on_test(
         pred_classes = regression_to_class(raw_preds, thresholds)
         targets_int = targets.astype(int)
     else:
-        raw_preds, targets, codes = predict_no_tta(model, test_loader, device, is_regression=False)
+        # Classification path. TTA (when enabled) averages raw logits across
+        # rotations/flips for BOTH val and test — required so thresholds fit on
+        # val match the distribution they're applied to on test.
+        if cfg.use_tta:
+            raw_preds, codes = predict_with_tta(model, test_dataset, device, is_regression=False)
+            targets = np.array([test_dataset.samples[i][1] for i in range(len(test_dataset))])
+        else:
+            raw_preds, targets, codes = predict_no_tta(model, test_loader, device, is_regression=False)
         if cfg.loss_type == "corn":
             from coral_pytorch.dataset import corn_label_from_logits
             pred_classes = corn_label_from_logits(torch.tensor(raw_preds)).numpy()

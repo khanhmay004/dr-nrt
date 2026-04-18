@@ -43,6 +43,17 @@ def extract_probs(model, loader, device):
     return np.concatenate(all_probs), np.concatenate(all_targets), all_codes
 
 
+def extract_probs_tta(model, dataset, device):
+    """Same as extract_probs but averages logits across TTA views (no vertical flip)."""
+    from src.tta import predict_with_tta
+    from scipy.special import softmax as sp_softmax
+
+    logits, codes = predict_with_tta(model, dataset, device, is_regression=False)
+    probs = sp_softmax(logits, axis=1)
+    targets = np.array([dataset.samples[i][1] for i in range(len(dataset))])
+    return probs, targets, codes
+
+
 def expected_grade(probs):
     return probs @ np.arange(NUM_CLASSES, dtype=np.float64)
 
@@ -89,6 +100,7 @@ def main():
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--ckpt", type=str, default="")
+    parser.add_argument("--tta", action="store_true", help="Use TTA when extracting val/test logits")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -113,8 +125,13 @@ def main():
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
                              num_workers=args.workers, pin_memory=True)
 
-    val_probs, val_targets, _ = extract_probs(model, val_loader, device)
-    test_probs, test_targets, test_codes = extract_probs(model, test_loader, device)
+    if args.tta:
+        print("Extracting probs with TTA (5 views, no vertical flip)...")
+        val_probs, val_targets, _ = extract_probs_tta(model, val_ds, device)
+        test_probs, test_targets, test_codes = extract_probs_tta(model, test_ds, device)
+    else:
+        val_probs, val_targets, _ = extract_probs(model, val_loader, device)
+        test_probs, test_targets, test_codes = extract_probs(model, test_loader, device)
 
     # Strategy 1: Argmax
     baseline_preds = test_probs.argmax(axis=1)
