@@ -142,6 +142,9 @@ class ExpConfig:
     # Logit-Adjusted CE temperature
     la_ce_tau: float = 1.0
 
+    # SORD soft-label distance function
+    sord_phi: str = "abs"  # abs | square
+
     # SWAD (dense weight averaging)
     use_swad: bool = False
     swad_N_s: int = 3

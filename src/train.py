@@ -288,123 +288,129 @@ def train_one_epoch(
     total_samples = 0
 
     pbar = tqdm(loader, desc=f"Epoch {epoch}/{total_epochs} [Train]", leave=True)
-    for batch in pbar:
-        is_joint = cfg.use_joint_contrastive and projector is not None
 
-        if is_joint:
-            # --- Joint Focal + OrdSupCon path (AMP-enabled) ---
-            view1 = batch[0].to(device)
-            view2 = batch[1].to(device)
-            targets = batch[2].to(device)
+    # Register avgpool hook once for the entire epoch (joint contrastive path)
+    _captured: dict[str, torch.Tensor] = {}
+    is_joint = cfg.use_joint_contrastive and projector is not None
+    hook = None
+    if is_joint:
+        hook = model.avgpool.register_forward_hook(
+            lambda _m, _inp, out: _captured.update(feat=out)
+        )
 
-            views = torch.cat([view1, view2], dim=0)
+    try:
+        for batch in pbar:
 
-            # Capture backbone features before FC via hook on pooling layer
-            _captured: dict[str, torch.Tensor] = {}
-            hook = model.avgpool.register_forward_hook(
-                lambda _m, _inp, out: _captured.update(feat=out)
-            )
+            if is_joint:
+                # --- Joint Focal + OrdSupCon path (AMP-enabled) ---
+                view1 = batch[0].to(device)
+                view2 = batch[1].to(device)
+                targets = batch[2].to(device)
 
-            use_amp = device.type == "cuda"
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                all_logits = model(views)
-                hook.remove()
+                views = torch.cat([view1, view2], dim=0)
 
-                # Classification loss on view1 only
-                logits = all_logits[: view1.size(0)]
-                loss_cls = criterion(logits, targets)
+                use_amp = device.type == "cuda"
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    all_logits = model(views)
 
-                # Contrastive loss on both views
-                features = _captured["feat"].flatten(1).float()  # [2B, 2048]
-                if cfg.detach_contrastive_backbone:
-                    features = features.detach()  # stop gradient to backbone
-                z = projector(features)
-                labels_2x = torch.cat([targets, targets], dim=0)
-                loss_con = contrastive_criterion(z, labels_2x)
+                    # Classification loss on view1 only
+                    logits = all_logits[: view1.size(0)]
+                    loss_cls = criterion(logits, targets)
 
-                # Compute effective λ with optional warmup
-                if cfg.joint_contrastive_warmup > 0 and epoch <= cfg.freeze_epochs + cfg.joint_contrastive_warmup:
-                    warmup_progress = max(0.0, (epoch - cfg.freeze_epochs)) / cfg.joint_contrastive_warmup
-                    effective_lambda = cfg.joint_contrastive_weight * warmup_progress
+                    # Contrastive loss on both views
+                    features = _captured["feat"].flatten(1).float()  # [2B, 2048]
+                    if cfg.detach_contrastive_backbone:
+                        features = features.detach()  # stop gradient to backbone
+                    z = projector(features)
+                    labels_2x = torch.cat([targets, targets], dim=0)
+                    loss_con = contrastive_criterion(z, labels_2x)
+
+                    # Compute effective λ with optional warmup
+                    if cfg.joint_contrastive_warmup > 0 and epoch <= cfg.freeze_epochs + cfg.joint_contrastive_warmup:
+                        warmup_progress = max(0.0, (epoch - cfg.freeze_epochs)) / cfg.joint_contrastive_warmup
+                        effective_lambda = cfg.joint_contrastive_weight * warmup_progress
+                    else:
+                        effective_lambda = cfg.joint_contrastive_weight
+
+                    loss = loss_cls + effective_lambda * loss_con
+
+                optimizer.zero_grad()
+                if use_amp and scaler is not None:
+                    scaler.scale(loss).backward()
+                    if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
+                        _apply_l2_sp(
+                            model, pretrained_ref_sd, cfg.l2_sp_alpha, device,
+                            scaler=scaler,
+                        )
+                    scaler.step(optimizer)
+                    scaler.update()
                 else:
-                    effective_lambda = cfg.joint_contrastive_weight
+                    loss.backward()
+                    if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
+                        _apply_l2_sp(model, pretrained_ref_sd, cfg.l2_sp_alpha, device)
+                    optimizer.step()
 
-                loss = loss_cls + effective_lambda * loss_con
+                total_loss += loss.item() * view1.size(0)
+                total_samples += view1.size(0)
+                correct += (logits.argmax(1) == targets).sum().item()
 
-            optimizer.zero_grad()
-            if use_amp and scaler is not None:
-                scaler.scale(loss).backward()
-                if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
-                    _apply_l2_sp(
-                        model, pretrained_ref_sd, cfg.l2_sp_alpha, device,
-                        scaler=scaler,
-                    )
-                scaler.step(optimizer)
-                scaler.update()
             else:
+                # --- Original supervised path ---
+                images, targets = batch[0].to(device), batch[1].to(device)
+                sample_weights = batch[3].to(device) if len(batch) > 3 else None
+
+                if (cfg.use_mixup or cfg.use_cutmix) and cfg.loss_type in ("corn", "cumlink"):
+                    raise ValueError(
+                        f"Mixup/CutMix is incompatible with ordinal loss '{cfg.loss_type}'. "
+                        "CORN/CumLink require integer class labels."
+                    )
+
+                use_mix = cfg.use_mixup or cfg.use_cutmix
+                if use_mix and (cfg.use_mixup and cfg.use_cutmix):
+                    if np.random.rand() < 0.5:
+                        images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
+                    else:
+                        images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
+                elif cfg.use_mixup:
+                    images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
+                elif cfg.use_cutmix:
+                    images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
+                else:
+                    y_a, y_b, lam = targets, targets, 1.0
+
+                outputs = model(images)
+                loss = compute_mixed_loss(criterion, outputs, y_a, y_b, lam, cfg.is_regression)
+
+                if sample_weights is not None:
+                    loss = (loss * sample_weights).mean()
+
+                optimizer.zero_grad()
                 loss.backward()
                 if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
                     _apply_l2_sp(model, pretrained_ref_sd, cfg.l2_sp_alpha, device)
                 optimizer.step()
 
-            total_loss += loss.item() * view1.size(0)
-            total_samples += view1.size(0)
-            correct += (logits.argmax(1) == targets).sum().item()
+                total_loss += loss.item() * images.size(0)
+                total_samples += images.size(0)
 
-        else:
-            # --- Original supervised path ---
-            images, targets = batch[0].to(device), batch[1].to(device)
-            sample_weights = batch[3].to(device) if len(batch) > 3 else None
+                if not (cfg.use_mixup or cfg.use_cutmix):
+                    if cfg.is_regression:
+                        preds = torch.round(outputs.squeeze(1)).clamp(0, NUM_CLASSES - 1).long()
+                        correct += (preds == targets.long()).sum().item()
+                    elif cfg.loss_type == "corn":
+                        from coral_pytorch.dataset import corn_label_from_logits
+                        correct += (corn_label_from_logits(outputs) == targets).sum().item()
+                    elif cfg.loss_type == "cumlink":
+                        preds = (torch.sigmoid(outputs) > 0.5).sum(dim=1).long()
+                        correct += (preds == targets).sum().item()
+                    else:
+                        correct += (outputs.argmax(1) == targets).sum().item()
 
-            if (cfg.use_mixup or cfg.use_cutmix) and cfg.loss_type in ("corn", "cumlink"):
-                raise ValueError(
-                    f"Mixup/CutMix is incompatible with ordinal loss '{cfg.loss_type}'. "
-                    "CORN/CumLink require integer class labels."
-                )
-
-            use_mix = cfg.use_mixup or cfg.use_cutmix
-            if use_mix and (cfg.use_mixup and cfg.use_cutmix):
-                if np.random.rand() < 0.5:
-                    images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
-                else:
-                    images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
-            elif cfg.use_mixup:
-                images, y_a, y_b, lam = mixup_data(images, targets, cfg.mixup_alpha)
-            elif cfg.use_cutmix:
-                images, y_a, y_b, lam = cutmix_data(images, targets, cfg.cutmix_alpha)
-            else:
-                y_a, y_b, lam = targets, targets, 1.0
-
-            outputs = model(images)
-            loss = compute_mixed_loss(criterion, outputs, y_a, y_b, lam, cfg.is_regression)
-
-            if sample_weights is not None:
-                loss = (loss * sample_weights).mean()
-
-            optimizer.zero_grad()
-            loss.backward()
-            if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
-                _apply_l2_sp(model, pretrained_ref_sd, cfg.l2_sp_alpha, device)
-            optimizer.step()
-
-            total_loss += loss.item() * images.size(0)
-            total_samples += images.size(0)
-
-            if not (cfg.use_mixup or cfg.use_cutmix):
-                if cfg.is_regression:
-                    preds = torch.round(outputs.squeeze(1)).clamp(0, NUM_CLASSES - 1).long()
-                    correct += (preds == targets.long()).sum().item()
-                elif cfg.loss_type == "corn":
-                    from coral_pytorch.dataset import corn_label_from_logits
-                    correct += (corn_label_from_logits(outputs) == targets).sum().item()
-                elif cfg.loss_type == "cumlink":
-                    preds = (torch.sigmoid(outputs) > 0.5).sum(dim=1).long()
-                    correct += (preds == targets).sum().item()
-                else:
-                    correct += (outputs.argmax(1) == targets).sum().item()
-
-        avg_loss = total_loss / total_samples
-        pbar.set_postfix(loss=f"{avg_loss:.4f}")
+            avg_loss = total_loss / total_samples
+            pbar.set_postfix(loss=f"{avg_loss:.4f}")
+    finally:
+        if hook is not None:
+            hook.remove()
 
     avg_loss = total_loss / max(total_samples, 1)
     acc = correct / max(total_samples, 1) if not (cfg.use_mixup or cfg.use_cutmix) else 0.0
@@ -544,6 +550,8 @@ def run_training(
     head_params = [p for p in model.parameters() if p.requires_grad]
     if projector is not None:
         head_params = list(head_params) + list(projector.parameters())
+    if contrastive_criterion is not None and hasattr(contrastive_criterion, "deltas"):
+        head_params = list(head_params) + list(contrastive_criterion.parameters())
     optimizer = torch.optim.Adam(head_params, lr=cfg.lr_head, weight_decay=cfg.weight_decay)
 
     cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -617,6 +625,10 @@ def run_training(
                     param_groups.append(
                         {"params": list(projector.parameters()), "lr": cfg.lr_finetune}
                     )
+                if contrastive_criterion is not None and hasattr(contrastive_criterion, "deltas"):
+                    param_groups.append(
+                        {"params": list(contrastive_criterion.parameters()), "lr": cfg.lr_finetune}
+                    )
                 optimizer = torch.optim.Adam(
                     param_groups, weight_decay=cfg.weight_decay,
                 )
@@ -632,6 +644,8 @@ def run_training(
                 all_params = list(model.parameters())
                 if projector is not None:
                     all_params = all_params + list(projector.parameters())
+                if contrastive_criterion is not None and hasattr(contrastive_criterion, "deltas"):
+                    all_params = all_params + list(contrastive_criterion.parameters())
                 optimizer = torch.optim.Adam(all_params, lr=cfg.lr_finetune, weight_decay=cfg.weight_decay)
 
             if cfg.scheduler == "step":
@@ -743,7 +757,12 @@ def run_training(
         logger.info(f"SWAD model saved ({swad.n_updates} weight snapshots averaged)")
         return swad_avg.module  # type: ignore[return-value]
 
-    model.load_state_dict(torch.load(cfg.ckpt_dir / f"{cfg.exp_name}_best.pth", weights_only=True))
+    # Prefer composite checkpoint (0.6·QWK + 0.4·F1); fall back to QWK-best
+    composite_ckpt = cfg.ckpt_dir / f"{cfg.exp_name}_best_composite.pth"
+    qwk_ckpt = cfg.ckpt_dir / f"{cfg.exp_name}_best.pth"
+    best_ckpt = composite_ckpt if composite_ckpt.exists() else qwk_ckpt
+    model.load_state_dict(torch.load(best_ckpt, weights_only=True))
+    logger.info(f"Loaded checkpoint: {best_ckpt.name}")
     return model
 
 

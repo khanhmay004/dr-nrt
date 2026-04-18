@@ -152,7 +152,7 @@ class LogitAdjustedCE(nn.Module):
         self.ls = label_smoothing
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        adj = logits - self.tau * self.log_pi.unsqueeze(0)
+        adj = logits + self.tau * self.log_pi.unsqueeze(0)
         return F.cross_entropy(adj, targets, label_smoothing=self.ls)
 
 
@@ -309,7 +309,7 @@ def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
 
     if cfg.loss_type == "sord":
         w = compute_class_weights(device) if cfg.use_class_weights else None
-        return SORDLoss(num_classes=NUM_CLASSES, class_weights=w)
+        return SORDLoss(num_classes=NUM_CLASSES, phi=cfg.sord_phi, class_weights=w)
 
     if cfg.loss_type == "la_ce":
         return LogitAdjustedCE(
