@@ -260,6 +260,8 @@ def _apply_l2_sp(
         ref = ref_sd[name]
         sp = sp + ((p - ref) ** 2).sum()
     sp_loss = alpha * sp
+    if not sp_loss.requires_grad:
+        return
     if scaler is not None:
         scaler.scale(sp_loss).backward()
     else:
