@@ -22,28 +22,50 @@ class GeM(nn.Module):
 
 
 class OrdinalPrototypeHead(nn.Module):
-    """Cosine classifier with K prototypes on a learnable 1-D axis."""
+    """Cosine classifier with K prototypes on a geodesic (1-D manifold on the unit sphere).
+
+    Prototypes are placed at angles ``theta_k = (k - (K-1)/2) * angular_spacing`` on the
+    great circle spanned by two learnable orthonormal axes ``v1, v2``:
+
+        mu_k = cos(theta_k) * v1 + sin(theta_k) * v2
+
+    This preserves the "1-D ordinal axis" intent while guaranteeing K distinct unit
+    prototypes (the naive single-axis formulation ``mu_k = k * v`` collapses to at most
+    two unit vectors after L2-normalization, and produces a degenerate zero prototype
+    at k = (K-1)/2).
+    """
 
     def __init__(
         self,
         feat_dim: int = 2048,
         num_classes: int = 5,
         scale: float = 20.0,
+        angular_spacing: float = 0.4,
         learnable_axis: bool = True,
     ) -> None:
         super().__init__()
         self.K = num_classes
         self.scale = scale
-        v = torch.randn(feat_dim)
-        v = v / v.norm().clamp(min=1e-8)
-        self.axis = nn.Parameter(v, requires_grad=learnable_axis)
+        self.angular_spacing = angular_spacing
+
+        v1 = torch.randn(feat_dim)
+        v1 = v1 / v1.norm().clamp(min=1e-8)
+        v2 = torch.randn(feat_dim)
+        v2 = v2 - (v2 @ v1) * v1
+        v2 = v2 / v2.norm().clamp(min=1e-8)
+        self.v1 = nn.Parameter(v1, requires_grad=learnable_axis)
+        self.v2 = nn.Parameter(v2, requires_grad=learnable_axis)
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
         feat_n = F.normalize(feat, dim=1)
-        axis_n = F.normalize(self.axis, dim=0)
+        v1_n = F.normalize(self.v1, dim=0)
+        v2_perp = self.v2 - (self.v2 @ v1_n) * v1_n
+        v2_n = F.normalize(v2_perp, dim=0)
+
         ks = torch.arange(self.K, device=feat.device, dtype=feat.dtype)
-        offsets = ks - (self.K - 1) / 2
-        mu = offsets.unsqueeze(1) * axis_n.unsqueeze(0)
+        angles = (ks - (self.K - 1) / 2) * self.angular_spacing
+        mu = torch.cos(angles).unsqueeze(1) * v1_n.unsqueeze(0) \
+             + torch.sin(angles).unsqueeze(1) * v2_n.unsqueeze(0)
         mu_n = F.normalize(mu, dim=1)
         logits = self.scale * (feat_n @ mu_n.T)
         return logits

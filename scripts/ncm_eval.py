@@ -6,7 +6,6 @@ import argparse
 from pathlib import Path
 import sys
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -51,6 +50,11 @@ def main() -> None:
     ap.add_argument("--exp", type=int, required=True)
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--softmax-scale", type=float, default=20.0,
+                    help="Temperature scaling for cosine-sim -> softmax probs. "
+                         "Raw cosine sims in [-1, 1] give a very flat softmax; "
+                         "scaling by ~20 (ArcFace convention) yields meaningful "
+                         "AUC/ECE without changing the argmax prediction.")
     args = ap.parse_args()
 
     cfg = get_config(args.exp)
@@ -84,7 +88,7 @@ def main() -> None:
         )
         sim = feats @ mu.T
         preds = sim.argmax(dim=1).numpy()
-        probs = F.softmax(sim, dim=1).numpy()
+        probs = F.softmax(sim * args.softmax_scale, dim=1).numpy()
         metrics = compute_metrics(y.numpy(), preds, y_pred_probs=probs)
         print(
             f"[{split}] " + "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())

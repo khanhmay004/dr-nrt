@@ -240,8 +240,15 @@ def _apply_l2_sp(
     ref_sd: dict[str, torch.Tensor],
     alpha: float,
     device: torch.device,
+    scaler: torch.amp.GradScaler | None = None,
 ) -> None:
-    """Accumulate L2-SP gradient: penalizes backbone drift from pretrained weights."""
+    """Accumulate L2-SP gradient: penalizes backbone drift from pretrained weights.
+
+    When a GradScaler is active the L2-SP loss MUST go through ``scaler.scale``;
+    otherwise its gradients are added un-scaled next to the scaled task gradients
+    and then divided by the scale factor at ``scaler.step()`` — making the
+    effective alpha ``cfg.l2_sp_alpha / scale_factor`` (~1/65536 in practice).
+    """
     sp = torch.zeros((), device=device)
     for name, p in model.named_parameters():
         if not p.requires_grad:
@@ -250,9 +257,13 @@ def _apply_l2_sp(
             continue
         if name not in ref_sd:
             continue
-        ref = ref_sd[name].to(device, non_blocking=True)
+        ref = ref_sd[name]
         sp = sp + ((p - ref) ** 2).sum()
-    (alpha * sp).backward()
+    sp_loss = alpha * sp
+    if scaler is not None:
+        scaler.scale(sp_loss).backward()
+    else:
+        sp_loss.backward()
 
 
 def train_one_epoch(
@@ -324,7 +335,10 @@ def train_one_epoch(
             if use_amp and scaler is not None:
                 scaler.scale(loss).backward()
                 if cfg.l2_sp_alpha > 0 and pretrained_ref_sd is not None:
-                    _apply_l2_sp(model, pretrained_ref_sd, cfg.l2_sp_alpha, device)
+                    _apply_l2_sp(
+                        model, pretrained_ref_sd, cfg.l2_sp_alpha, device,
+                        scaler=scaler,
+                    )
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -550,10 +564,12 @@ def run_training(
         swad.avg = swad.avg.to(device)
         logger.info(f"SWAD enabled — N_s={cfg.swad_N_s}, N_e={cfg.swad_N_e}")
 
-    # L2-SP: load reference weights for backbone anchoring
+    # L2-SP: load reference weights for backbone anchoring (kept on device so the
+    # inner loop doesn't do CPU->GPU copies per step; ResNet-50 weights ~100 MB).
     pretrained_ref_sd: dict[str, torch.Tensor] | None = None
     if cfg.l2_sp_alpha > 0 and cfg.load_backbone:
-        pretrained_ref_sd = torch.load(cfg.load_backbone, map_location="cpu")
+        raw_sd = torch.load(cfg.load_backbone, map_location=device)
+        pretrained_ref_sd = {k: v.detach().to(device) for k, v in raw_sd.items()}
         logger.info(f"L2-SP enabled — α={cfg.l2_sp_alpha}, anchor={cfg.load_backbone}")
 
     # AMP scaler for joint contrastive path (halves VRAM for 2-view forward)
@@ -787,19 +803,25 @@ def evaluate_on_test(
 
     metrics = compute_metrics(targets_int, pred_classes, y_pred_probs)
 
+    # Suffix prevents post-hoc evaluations (eval_checkpoint, WiSE-FT sweeps, NCM)
+    # from overwriting the original training artefacts. Training itself uses
+    # ``cfg.eval_suffix == ""`` so behaviour is unchanged on the critical path.
+    suffix = f"_{cfg.eval_suffix}" if cfg.eval_suffix else ""
+    cfg.results_dir.mkdir(parents=True, exist_ok=True)
+
     save_confusion_matrix(
         targets_int, pred_classes,
-        cfg.results_dir / f"{cfg.exp_name}_cm.png",
+        cfg.results_dir / f"{cfg.exp_name}{suffix}_cm.png",
     )
     save_classification_report(
         targets_int, pred_classes,
-        cfg.results_dir / f"{cfg.exp_name}_cls_report.txt",
+        cfg.results_dir / f"{cfg.exp_name}{suffix}_cls_report.txt",
     )
 
     raw_for_csv = raw_preds if cfg.is_regression else pred_classes.astype(float)
     save_predictions(
         codes, raw_for_csv, pred_classes, targets_int,
-        cfg.results_dir / f"{cfg.exp_name}_preds.csv",
+        cfg.results_dir / f"{cfg.exp_name}{suffix}_preds.csv",
     )
 
     logger.info(

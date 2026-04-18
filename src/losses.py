@@ -178,9 +178,18 @@ class CLOCLoss(nn.Module):
         self.margin_reg = margin_reg
 
     def cumulative_margin(self, dist: torch.Tensor) -> torch.Tensor:
-        """For |delta_y| = d, margin = sum of deltas[0..d-1]."""
-        c = torch.zeros(self.K, device=dist.device)
-        c[1:] = self.deltas.cumsum(0)
+        """For |delta_y| = d, margin = sum of softplus(deltas)[0..d-1].
+
+        ``softplus`` enforces positivity of each per-adjacent-pair margin so that
+        ``cumulative_margin`` is monotonically non-decreasing in ``d``.  Without
+        it, unconstrained learned ``deltas`` can go negative, which would *add*
+        similarity to distant-class pairs — the opposite of the intended
+        separation.  Only ``deltas[2]`` is explicitly reg-constrained (via
+        ``min_margin_23``); the other three would otherwise be free to drift.
+        """
+        pos_deltas = F.softplus(self.deltas)
+        c = torch.zeros(self.K, device=dist.device, dtype=pos_deltas.dtype)
+        c[1:] = pos_deltas.cumsum(0)
         return c[dist]
 
     def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -194,12 +203,28 @@ class CLOCLoss(nn.Module):
         n_pos = pos_mask.sum(dim=1).clamp(min=1).float()
         per_anchor = -(logp * pos_mask.float()).sum(dim=1) / n_pos
         loss = per_anchor.mean()
-        reg = F.relu(self.min_margin_23 - self.deltas[2]) ** 2
+        # Regularizer operates on the effective (positive) margin actually used
+        # in ``cumulative_margin``, so the clinical constraint on G2<->G3 matches
+        # what the loss sees.
+        effective_23 = F.softplus(self.deltas[2])
+        reg = F.relu(self.min_margin_23 - effective_23) ** 2
         return loss + self.margin_reg * reg
 
 
 class RnCLoss(nn.Module):
-    """Rank-N-Contrast loss for continuous/ordinal labels (Zha et al., NeurIPS 2023)."""
+    """Rank-N-Contrast loss for continuous/ordinal labels (Zha et al., NeurIPS 2023).
+
+    For anchor i and every other sample j, the per-pair loss is
+
+        L_{i,j} = -log( exp(s_{i,j}) /
+                        sum_{k: d(y_i, y_k) >= d(y_i, y_j), k != i} exp(s_{i,k}) )
+
+    where s is feature similarity (negative squared-L2 or cosine, both scaled by 1/T)
+    and d is label distance (L1 or squared).  The final loss is the mean of L_{i,j}
+    over all (i, j), j != i.  Unlike the previous implementation, the numerator is a
+    single exp(s_{i,j}) — not a sum over closer-than-j pairs — which matches the
+    published formulation.
+    """
 
     def __init__(
         self,
@@ -214,30 +239,43 @@ class RnCLoss(nn.Module):
 
     def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         N = features.size(0)
+        device = features.device
+
         if self.feature_sim == "l2":
             feat_dist = torch.cdist(features, features, p=2) ** 2
             sim = -feat_dist / self.T
         else:
             sim = features @ features.T / self.T
+
         if self.label_diff == "l1":
             ldist = (labels.unsqueeze(0) - labels.unsqueeze(1)).abs().float()
         else:
             ldist = (labels.unsqueeze(0) - labels.unsqueeze(1)).float() ** 2
-        eye = torch.eye(N, dtype=torch.bool, device=features.device)
-        loss = torch.tensor(0.0, device=features.device)
-        cnt = 0
+
+        eye = torch.eye(N, dtype=torch.bool, device=device)
+
+        total_loss = torch.zeros((), device=device)
+        total_pairs = 0
+        # One outer loop over anchors keeps memory at O(N^2); inner pair loop is
+        # vectorized via a [N_j, N_k] inclusion mask.
         for i in range(N):
-            order = ldist[i].argsort()
-            order = order[order != i]
-            for rank_j, j in enumerate(order):
-                if rank_j == 0:
-                    continue
-                pos_idx = order[:rank_j]
-                num = torch.exp(sim[i, pos_idx]).sum()
-                denom = num + torch.exp(sim[i, order[rank_j:]]).sum()
-                loss = loss + (-torch.log(num / denom + 1e-12))
-                cnt += 1
-        return loss / cnt if cnt > 0 else torch.tensor(0.0, device=features.device)
+            li = ldist[i]                                       # [N]
+            # include[j, k] = True iff k is in the denominator for pair (i, j):
+            #   k != i  and  d(y_i, y_k) >= d(y_i, y_j)
+            include = li.unsqueeze(0) >= li.unsqueeze(1)        # [N_j, N_k]
+            include[:, i] = False
+            sim_i = sim[i]                                       # [N]
+            sim_masked = sim_i.unsqueeze(0).expand(N, N).masked_fill(~include, -1e4)
+            denom_log = torch.logsumexp(sim_masked, dim=1)       # [N_j]
+            losses_j = denom_log - sim_i                          # [N_j]
+            # Drop j == i (the anchor itself has no pair with itself).
+            keep = ~eye[i]
+            total_loss = total_loss + losses_j[keep].sum()
+            total_pairs += int(keep.sum().item())
+
+        if total_pairs == 0:
+            return torch.zeros((), device=device)
+        return total_loss / total_pairs
 
 
 def build_loss(cfg: ExpConfig, device: torch.device) -> nn.Module:
