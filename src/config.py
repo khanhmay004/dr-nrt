@@ -146,6 +146,7 @@ class ExpConfig:
     use_swad: bool = False
     swad_N_s: int = 3
     swad_N_e: int = 6
+    swad_start_epoch: int = 50
 
     # contrastive loss variant for joint training
     contrastive_loss_type: str = "ordsupcon"  # ordsupcon | cloc | rnc
@@ -721,9 +722,8 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         total_epochs=80,
         freeze_epochs=5,
         lr_head=1e-3, lr_finetune=1e-4,
-        use_swa=False,
         use_swad=True,
-        swad_N_s=3, swad_N_e=6,
+        swad_N_s=3, swad_N_e=6, swad_start_epoch=50,
         oversample_target=1000,
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),
@@ -856,7 +856,7 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         contrastive_proj_dim=128,
         joint_contrastive_warmup=8,
         l2_sp_alpha=1e-3,
-        use_swad=True, swad_N_s=3, swad_N_e=6,
+        use_swad=True, swad_N_s=3, swad_N_e=6, swad_start_epoch=50,
         load_backbone=str(
             CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
         ),

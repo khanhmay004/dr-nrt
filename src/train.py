@@ -562,7 +562,7 @@ def run_training(
     if cfg.use_swad:
         swad = SWADAveragedModel(model, N_s=cfg.swad_N_s, N_e=cfg.swad_N_e)
         swad.avg = swad.avg.to(device)
-        logger.info(f"SWAD enabled — N_s={cfg.swad_N_s}, N_e={cfg.swad_N_e}")
+        logger.info(f"SWAD enabled — N_s={cfg.swad_N_s}, N_e={cfg.swad_N_e}, start_epoch={cfg.swad_start_epoch}")
 
     # L2-SP: load reference weights for backbone anchoring (kept on device so the
     # inner loop doesn't do CPU->GPU copies per step; ResNet-50 weights ~100 MB).
@@ -663,7 +663,7 @@ def run_training(
             model, val_loader, criterion, device, cfg, epoch, cfg.total_epochs,
         )
 
-        if swad is not None:
+        if swad is not None and epoch >= cfg.swad_start_epoch:
             swad.step(model, val_loss)
         current_lr = optimizer.param_groups[0]["lr"]
 
