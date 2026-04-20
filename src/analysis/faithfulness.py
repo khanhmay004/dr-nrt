@@ -150,7 +150,7 @@ def insertion_curve(
                 score = float(torch.softmax(out, dim=1)[0, int(target_class)].item())
         scores.append(score)
     scores_arr = np.array(scores)
-    auc = float(np.trapz(scores_arr, fractions))
+    auc = float(np.trapezoid(scores_arr, fractions))
     return fractions, scores_arr, auc
 
 
@@ -188,7 +188,7 @@ def deletion_curve(
                 score = float(torch.softmax(out, dim=1)[0, int(target_class)].item())
         scores.append(score)
     scores_arr = np.array(scores)
-    auc = float(np.trapz(scores_arr, fractions))
+    auc = float(np.trapezoid(scores_arr, fractions))
     return fractions, scores_arr, auc
 
 
