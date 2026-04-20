@@ -9,6 +9,8 @@ build/
 docs/
 data/
 checkpoints/
+results/
+messidor-2/
 Eyepacs/
 .venv/
 B_Disease_Grading/
