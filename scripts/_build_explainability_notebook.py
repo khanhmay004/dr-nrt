@@ -323,14 +323,21 @@ for code in eval_ids:
     pred = int(np.argmax(probs))
     true = int(ens_df.loc[ens_df['id_code'] == code, 'true_label'].iloc[0])
 
+    H, W = bg.shape[:2]
     fov = fundus_cv.retinal_fov_mask(bg)
-    disc = fundus_cv.detect_optic_disc(bg, fov_mask=fov)
-    fovea = fundus_cv.detect_fovea(bg, fov_mask=fov, disc_mask=disc)
+    disc_loc, disc_r = fundus_cv.detect_optic_disc(bg, fov_mask=fov)
+    fovea_loc = fundus_cv.detect_fovea(bg, fov_mask=fov, optic_disc=disc_loc)
+    disc_mask = np.zeros((H, W), dtype=np.uint8)
+    if disc_loc is not None:
+        cv2.circle(disc_mask, disc_loc, int(disc_r), 1, -1)
+    fovea_mask = np.zeros((H, W), dtype=np.uint8)
+    if fovea_loc is not None:
+        cv2.circle(fovea_mask, fovea_loc, int(H * 0.08), 1, -1)
     lesions = faith.compute_lesion_proxies(bg)
 
     for m in METHODS:
         cam = expl.gradcam(model, t, pred, TARGET_LAYER, method=m)
-        metrics = faith.evaluate_sample(cam, bg, fov, disc, fovea, lesions)
+        metrics = faith.evaluate_sample(cam, bg, fov, disc_mask, fovea_mask, lesions)
         rows.append({'id_code': code, 'method': m, 'true': true, 'pred': pred, **metrics})
 
 eval_df = pd.DataFrame(rows)

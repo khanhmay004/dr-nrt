@@ -112,7 +112,7 @@ def _ordered_pixel_indices(cam: np.ndarray, descending: bool = True) -> np.ndarr
     flat = cam.flatten()
     order = np.argsort(flat)
     if descending:
-        order = order[::-1]
+        order = np.ascontiguousarray(order[::-1])
     return order
 
 
