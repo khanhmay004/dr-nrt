@@ -157,16 +157,16 @@ def main():
     m_argmax = compute_metrics(test_targets, argmax_preds, test_probs)
     _print_metrics("ENSEMBLE — argmax of avg probs", m_argmax)
 
-    # Strategy B: expected-grade + OptimizedRounder fit on val
+    # Strategy B: expected-grade + OptimizedRounder fit on val (pure QWK obj)
     class_axis = np.arange(NUM_CLASSES, dtype=np.float64)
     val_eg = val_probs @ class_axis
     test_eg = test_probs @ class_axis
     rounder = OptimizedRounder()
     thresholds = rounder.fit(val_eg, val_targets)
-    print(f"\nExpected-grade thresholds (on val): {[f'{t:.4f}' for t in thresholds]}")
+    print(f"\nExpected-grade thresholds (QWK-obj): {[f'{t:.4f}' for t in thresholds]}")
     eg_preds = regression_to_class(test_eg, thresholds)
     m_eg = compute_metrics(test_targets, eg_preds, test_probs)
-    _print_metrics("ENSEMBLE — expected-grade + OptimizedRounder", m_eg)
+    _print_metrics("ENSEMBLE — expected-grade + OptimizedRounder (QWK obj)", m_eg)
 
     # Strategy C: cumulative threshold opt on val
     from scipy.optimize import minimize
@@ -191,29 +191,62 @@ def main():
     m_cum = compute_metrics(test_targets, cum_preds, test_probs)
     _print_metrics("ENSEMBLE — cumulative probability thresholds", m_cum)
 
-    # Pick best on val QWK (not test — avoid test-set leakage)
-    val_argmax_qwk = quadratic_weighted_kappa(val_targets, val_probs.argmax(axis=1))
-    val_eg_qwk = quadratic_weighted_kappa(
-        val_targets, regression_to_class(val_eg, thresholds)
-    )
-    val_cum_qwk = quadratic_weighted_kappa(
-        val_targets, cum_to_class(val_probs, cum_thr)
-    )
-    print(f"\n{'='*64}\nVAL QWK per strategy (for selection):")
-    print(f"  argmax:             {val_argmax_qwk:.4f}")
-    print(f"  expected_grade_opt: {val_eg_qwk:.4f}")
-    print(f"  cumulative_opt:     {val_cum_qwk:.4f}")
-    print(f"{'='*64}")
+    # Strategy D: expected-grade thresholds that maximise COMPOSITE
+    # (0.6·QWK + 0.4·MacroF1) on val. The pure-QWK objective collapses
+    # minority classes; composite preserves minority F1 while keeping QWK.
+    from sklearn.metrics import f1_score
+
+    def _composite_val(thr_arr, probs_eg, targets):
+        preds = regression_to_class(probs_eg, sorted(thr_arr.tolist()))
+        q = quadratic_weighted_kappa(targets, preds)
+        mf1 = f1_score(targets, preds, average="macro", zero_division=0)
+        return -(0.6 * q + 0.4 * mf1)
+
+    res_c = minimize(_composite_val, x0=np.array([0.5, 1.5, 2.5, 3.5]),
+                     args=(val_eg, val_targets),
+                     method="Nelder-Mead",
+                     options={"maxiter": 2000, "xatol": 1e-6})
+    comp_thr = sorted(res_c.x.tolist())
+    print(f"\nExpected-grade thresholds (composite-obj): {[f'{t:.4f}' for t in comp_thr]}")
+    comp_preds = regression_to_class(test_eg, comp_thr)
+    m_comp = compute_metrics(test_targets, comp_preds, test_probs)
+    _print_metrics("ENSEMBLE — expected-grade + composite-opt thresholds", m_comp)
+
+    # Selection: composite score on val (not QWK alone — avoids minority collapse).
+    def _val_composite_of(preds_val):
+        q = quadratic_weighted_kappa(val_targets, preds_val)
+        mf1 = f1_score(val_targets, preds_val, average="macro", zero_division=0)
+        return q, mf1, 0.6 * q + 0.4 * mf1
+
+    def _strategy_val(preds_on_val):
+        q, mf1, comp = _val_composite_of(preds_on_val)
+        return q, mf1, comp
+
+    vq_am, vmf1_am, vcomp_am = _strategy_val(val_probs.argmax(axis=1))
+    vq_eg, vmf1_eg, vcomp_eg = _strategy_val(regression_to_class(val_eg, thresholds))
+    vq_cum, vmf1_cum, vcomp_cum = _strategy_val(cum_to_class(val_probs, cum_thr))
+    vq_c, vmf1_c, vcomp_c = _strategy_val(regression_to_class(val_eg, comp_thr))
+
+    print(f"\n{'='*72}\nVAL selection table (composite = 0.6·QWK + 0.4·MacroF1):")
+    print(f"  {'strategy':30s}  {'QWK':>7s}  {'MacroF1':>8s}  {'Composite':>10s}")
+    print(f"  {'argmax':30s}  {vq_am:7.4f}  {vmf1_am:8.4f}  {vcomp_am:10.4f}")
+    print(f"  {'expected_grade_qwk_opt':30s}  {vq_eg:7.4f}  {vmf1_eg:8.4f}  {vcomp_eg:10.4f}")
+    print(f"  {'cumulative_qwk_opt':30s}  {vq_cum:7.4f}  {vmf1_cum:8.4f}  {vcomp_cum:10.4f}")
+    print(f"  {'expected_grade_composite_opt':30s}  {vq_c:7.4f}  {vmf1_c:8.4f}  {vcomp_c:10.4f}")
+    print(f"{'='*72}")
 
     strategies = {
-        "argmax": (argmax_preds, m_argmax, val_argmax_qwk),
-        "expected_grade_opt": (eg_preds, m_eg, val_eg_qwk),
-        "cumulative_opt": (cum_preds, m_cum, val_cum_qwk),
+        "argmax": (argmax_preds, m_argmax, vcomp_am),
+        "expected_grade_qwk_opt": (eg_preds, m_eg, vcomp_eg),
+        "cumulative_qwk_opt": (cum_preds, m_cum, vcomp_cum),
+        "expected_grade_composite_opt": (comp_preds, m_comp, vcomp_c),
     }
     best_name = max(strategies, key=lambda k: strategies[k][2])
     best_preds, best_metrics, _ = strategies[best_name]
-    print(f"\nBEST (by val QWK): {best_name}  "
-          f"→ TEST QWK {best_metrics['qwk']:.4f}")
+    print(f"\nBEST (by val composite): {best_name}")
+    print(f"  TEST  QWK={best_metrics['qwk']:.4f}  "
+          f"MacroF1={best_metrics['macro_f1']:.4f}  "
+          f"F1-Severe={best_metrics.get('f1_Severe', 0):.4f}")
 
     # Save artefacts under a dedicated ensemble directory
     tag = "_".join(str(eid) for eid in args.exps)
@@ -231,14 +264,19 @@ def main():
         f.write(f"Members: {[c.exp_name for c in configs]}\n")
         f.write(f"Weights: {weights.tolist()}\n")
         f.write(f"TTA: {use_tta}\n\n")
-        for sname, (_, sm, svq) in strategies.items():
-            f.write(f"--- {sname} (val QWK {svq:.4f}) ---\n")
+        for sname, (_, sm, s_vcomp) in strategies.items():
+            f.write(f"--- {sname} (val composite {s_vcomp:.4f}) ---\n")
             for k in ("qwk", "accuracy", "macro_f1", "sensitivity", "specificity",
                       "f1_No DR", "f1_Mild", "f1_Moderate", "f1_Severe",
                       "f1_Proliferative"):
                 f.write(f"  {k}: {sm.get(k, 0):.4f}\n")
             f.write("\n")
-        f.write(f"Best (by val QWK): {best_name} — test QWK {best_metrics['qwk']:.4f}\n")
+        f.write(
+            f"Best (by val composite): {best_name}\n"
+            f"  test QWK      = {best_metrics['qwk']:.4f}\n"
+            f"  test MacroF1  = {best_metrics['macro_f1']:.4f}\n"
+            f"  test F1-Severe= {best_metrics.get('f1_Severe', 0):.4f}\n"
+        )
 
     print(f"\nSaved to {out_dir}")
 

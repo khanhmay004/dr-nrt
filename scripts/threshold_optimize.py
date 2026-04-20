@@ -155,16 +155,77 @@ def main():
     cum_metrics = compute_metrics(test_targets.astype(int), cum_preds, test_probs)
     _print_metrics(cum_metrics)
 
-    # Pick best
-    strategies = {
-        "argmax": (baseline_preds, baseline_metrics),
-        "expected_grade_opt": (opt_preds, opt_metrics),
-        "cumulative_opt": (cum_preds, cum_metrics),
-    }
-    best_name = max(strategies, key=lambda k: strategies[k][1]["qwk"])
-    best_preds, best_metrics = strategies[best_name]
+    # Strategy 4: Expected-grade thresholds optimized for COMPOSITE
+    # (0.6·QWK + 0.4·MacroF1). Pure-QWK optimization collapses minority
+    # classes into neighbours; composite preserves minority F1.
+    from sklearn.metrics import f1_score
+    from scipy.optimize import minimize as _minimize
+    from src.evaluate import quadratic_weighted_kappa as _qwk
 
-    print(f"\n{'='*60}\nBEST: {best_name}  (QWK={best_metrics['qwk']:.4f})\n{'='*60}")
+    val_targets_int = val_targets.astype(int)
+    test_targets_int = test_targets.astype(int)
+
+    def _cum_to_cls(probs, thr):
+        preds = np.zeros(probs.shape[0], dtype=int)
+        for k in range(1, NUM_CLASSES):
+            preds += (probs[:, k:].sum(axis=1) >= thr[k - 1]).astype(int)
+        return preds
+
+    def _composite(targets, preds):
+        q = _qwk(targets, preds)
+        mf1 = f1_score(targets, preds, average="macro", zero_division=0)
+        return 0.6 * q + 0.4 * mf1
+
+    # Composite-objective threshold search on expected-grade val
+    def _composite_loss(thr_arr, probs_eg, targets):
+        preds = regression_to_class(probs_eg, sorted(thr_arr.tolist()))
+        return -_composite(targets, preds)
+
+    res_c = _minimize(_composite_loss, x0=np.array([0.5, 1.5, 2.5, 3.5]),
+                      args=(val_eg, val_targets_int),
+                      method="Nelder-Mead",
+                      options={"maxiter": 2000, "xatol": 1e-6})
+    comp_thr = sorted(res_c.x.tolist())
+    print(f"\nExpected-grade thresholds (composite-obj): "
+          f"{[f'{t:.4f}' for t in comp_thr]}")
+    comp_test_preds = regression_to_class(test_eg, comp_thr)
+    comp_metrics = compute_metrics(test_targets_int, comp_test_preds, test_probs)
+    print(f"\n{'='*60}\nSTRATEGY 4: Expected-grade + composite-opt thresholds\n{'='*60}")
+    _print_metrics(comp_metrics)
+
+    # Re-fit cumulative thresholds on val (the Strategy-3 call above optimized
+    # and applied in one pass, discarding the thr — refit here to score val).
+    res_cum = _minimize(
+        lambda t, p, tg: -_qwk(tg, _cum_to_cls(p, t.tolist())),
+        x0=np.array([0.5, 0.5, 0.5, 0.5]),
+        args=(val_probs, val_targets_int),
+        method="Nelder-Mead",
+        options={"maxiter": 2000, "xatol": 1e-6},
+    )
+    cum_thr_val = sorted(res_cum.x.tolist())
+
+    val_comps = {
+        "argmax":                        _composite(val_targets_int, val_probs.argmax(axis=1)),
+        "expected_grade_qwk_opt":        _composite(val_targets_int, regression_to_class(val_eg, opt_thresholds)),
+        "cumulative_qwk_opt":            _composite(val_targets_int, _cum_to_cls(val_probs, cum_thr_val)),
+        "expected_grade_composite_opt":  _composite(val_targets_int, regression_to_class(val_eg, comp_thr)),
+    }
+
+    strategies = {
+        "argmax":                       (baseline_preds,  baseline_metrics),
+        "expected_grade_qwk_opt":       (opt_preds,       opt_metrics),
+        "cumulative_qwk_opt":           (cum_preds,       cum_metrics),
+        "expected_grade_composite_opt": (comp_test_preds, comp_metrics),
+    }
+    print(f"\n{'='*60}\nVAL composite per strategy (selection):")
+    for sname, vc in val_comps.items():
+        print(f"  {sname:32s}  val_composite={vc:.4f}")
+    best_name = max(val_comps, key=lambda k: val_comps[k])
+    best_preds, best_metrics = strategies[best_name]
+    print(f"\n{'='*60}\nBEST (by val composite): {best_name}")
+    print(f"  TEST QWK={best_metrics['qwk']:.4f}  "
+          f"MacroF1={best_metrics['macro_f1']:.4f}  "
+          f"F1-Severe={best_metrics.get('f1_Severe', 0):.4f}\n{'='*60}")
 
     # Save
     out_dir = cfg.results_dir / "threshold_opt"
