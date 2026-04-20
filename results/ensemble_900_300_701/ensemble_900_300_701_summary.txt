@@ -1,0 +1,41 @@
+Members: ['exp900_ordsupcon_champion', 'exp300_d1_dropout_cosine', 'exp701_h1_ordsupcon_d1recipe']
+Weights: [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+TTA: True
+
+--- argmax (val QWK 0.9443) ---
+  qwk: 0.9031
+  accuracy: 0.8418
+  macro_f1: 0.7042
+  sensitivity: 0.6971
+  specificity: 0.9608
+  f1_No DR: 0.9776
+  f1_Mild: 0.6452
+  f1_Moderate: 0.8039
+  f1_Severe: 0.4727
+  f1_Proliferative: 0.6216
+
+--- expected_grade_opt (val QWK 0.9514) ---
+  qwk: 0.9105
+  accuracy: 0.8091
+  macro_f1: 0.6467
+  sensitivity: 0.6408
+  specificity: 0.9529
+  f1_No DR: 0.9775
+  f1_Mild: 0.5769
+  f1_Moderate: 0.7601
+  f1_Severe: 0.3733
+  f1_Proliferative: 0.5455
+
+--- cumulative_opt (val QWK 0.9478) ---
+  qwk: 0.9046
+  accuracy: 0.8291
+  macro_f1: 0.6879
+  sensitivity: 0.6908
+  specificity: 0.9585
+  f1_No DR: 0.9775
+  f1_Mild: 0.6341
+  f1_Moderate: 0.7869
+  f1_Severe: 0.4412
+  f1_Proliferative: 0.6000
+
+Best (by val QWK): expected_grade_opt — test QWK 0.9105

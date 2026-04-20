@@ -1,0 +1,128 @@
+(main) root@C.34514688:/workspace/dr-nrt$ python scripts/threshold_optimize.py --exp 701 --ckpt checkpoints/exp701_h1_ordsupcon_d1recipe/exp701_h1_ordsupcon_d1recipe_best.pth 
+Loaded: checkpoints/exp701_h1_ordsupcon_d1recipe/exp701_h1_ordsupcon_d1recipe_best.pth
+Val: 467 | Test: 550
+
+============================================================
+STRATEGY 1: Argmax (original)
+============================================================
+  QWK:          0.9028
+  Accuracy:     0.8182
+  Macro F1:     0.6856
+  Sensitivity:  0.6947
+  Specificity:  0.9555
+  AUC-ROC:      0.9409
+  ECE:          0.0636
+  Per-class F1: No DR=0.972  Mild=0.583  Moderate=0.760  Severe=0.431  Proliferative=0.683  
+
+Optimized thresholds (on val): ['0.5043', '1.5383', '2.5457', '3.4685']
+
+============================================================
+STRATEGY 2: Expected-grade + optimized thresholds
+============================================================
+  QWK:          0.9020
+  Accuracy:     0.7873
+  Macro F1:     0.6310
+  Sensitivity:  0.6439
+  Specificity:  0.9493
+  AUC-ROC:      0.9409
+  ECE:          0.0636
+  Per-class F1: No DR=0.976  Mild=0.583  Moderate=0.717  Severe=0.356  Proliferative=0.523  
+
+============================================================
+STRATEGY 3: Cumulative probability thresholds
+============================================================
+  Cumulative thresholds (on val): ['0.3980', '0.5303', '0.5508', '0.5771']
+  QWK:          0.8974
+  Accuracy:     0.8036
+  Macro F1:     0.6522
+  Sensitivity:  0.6607
+  Specificity:  0.9529
+  AUC-ROC:      0.9409
+  ECE:          0.0636
+  Per-class F1: No DR=0.974  Mild=0.591  Moderate=0.751  Severe=0.378  Proliferative=0.567  
+
+============================================================
+BEST: argmax  (QWK=0.9028)
+============================================================
+
+============================================================
+DELTA: Best vs argmax
+============================================================
+  qwk                 : 0.9028 → 0.9028  (─ +0.0000)
+  accuracy            : 0.8182 → 0.8182  (─ +0.0000)
+  macro_f1            : 0.6856 → 0.6856  (─ +0.0000)
+  sensitivity         : 0.6947 → 0.6947  (─ +0.0000)
+  specificity         : 0.9555 → 0.9555  (─ +0.0000)
+  f1_No DR            : 0.9722 → 0.9722  (─ +0.0000)
+  f1_Mild             : 0.5827 → 0.5827  (─ +0.0000)
+  f1_Moderate         : 0.7596 → 0.7596  (─ +0.0000)
+  f1_Severe           : 0.4308 → 0.4308  (─ +0.0000)
+  f1_Proliferative    : 0.6829 → 0.6829  (─ +0.0000)
+  auc_roc             : 0.9409 → 0.9409  (─ +0.0000)
+  ece                 : 0.0636 → 0.0636  (─ +0.0000)
+
+Saved to /workspace/dr-nrt/results/exp701_h1_ordsupcon_d1recipe/threshold_opt
+(main) root@C.34514688:/workspace/dr-nrt$ python scripts/threshold_optimize.py --exp 701 --ckpt checkpoints/exp701_h1_ordsupcon_d1recipe/exp701_h1_ordsupcon_d1recipe_best_composite.pth 
+Loaded: checkpoints/exp701_h1_ordsupcon_d1recipe/exp701_h1_ordsupcon_d1recipe_best_composite.pth
+Val: 467 | Test: 550
+
+============================================================
+STRATEGY 1: Argmax (original)
+============================================================
+  QWK:          0.9028
+  Accuracy:     0.8182
+  Macro F1:     0.6856
+  Sensitivity:  0.6947
+  Specificity:  0.9555
+  AUC-ROC:      0.9409
+  ECE:          0.0636
+  Per-class F1: No DR=0.972  Mild=0.583  Moderate=0.760  Severe=0.431  Proliferative=0.683  
+
+Optimized thresholds (on val): ['0.5043', '1.5383', '2.5457', '3.4685']
+
+============================================================
+STRATEGY 2: Expected-grade + optimized thresholds
+============================================================
+  QWK:          0.9020
+  Accuracy:     0.7873
+  Macro F1:     0.6310
+  Sensitivity:  0.6439
+  Specificity:  0.9493
+  AUC-ROC:      0.9409
+  ECE:          0.0636
+  Per-class F1: No DR=0.976  Mild=0.583  Moderate=0.717  Severe=0.356  Proliferative=0.523  
+
+============================================================
+STRATEGY 3: Cumulative probability thresholds
+============================================================
+  Cumulative thresholds (on val): ['0.3980', '0.5303', '0.5508', '0.5771']
+  QWK:          0.8974
+  Accuracy:     0.8036
+  Macro F1:     0.6522
+  Sensitivity:  0.6607
+  Specificity:  0.9529
+  AUC-ROC:      0.9409
+  ECE:          0.0636
+  Per-class F1: No DR=0.974  Mild=0.591  Moderate=0.751  Severe=0.378  Proliferative=0.567  
+
+============================================================
+BEST: argmax  (QWK=0.9028)
+============================================================
+
+============================================================
+DELTA: Best vs argmax
+============================================================
+  qwk                 : 0.9028 → 0.9028  (─ +0.0000)
+  accuracy            : 0.8182 → 0.8182  (─ +0.0000)
+  macro_f1            : 0.6856 → 0.6856  (─ +0.0000)
+  sensitivity         : 0.6947 → 0.6947  (─ +0.0000)
+  specificity         : 0.9555 → 0.9555  (─ +0.0000)
+  f1_No DR            : 0.9722 → 0.9722  (─ +0.0000)
+  f1_Mild             : 0.5827 → 0.5827  (─ +0.0000)
+  f1_Moderate         : 0.7596 → 0.7596  (─ +0.0000)
+  f1_Severe           : 0.4308 → 0.4308  (─ +0.0000)
+  f1_Proliferative    : 0.6829 → 0.6829  (─ +0.0000)
+  auc_roc             : 0.9409 → 0.9409  (─ +0.0000)
+  ece                 : 0.0636 → 0.0636  (─ +0.0000)
+
+Saved to /workspace/dr-nrt/results/exp701_h1_ordsupcon_d1recipe/threshold_opt

@@ -9,7 +9,6 @@ build/
 docs/
 data/
 checkpoints/
-results/
 Eyepacs/
 .venv/
 B_Disease_Grading/

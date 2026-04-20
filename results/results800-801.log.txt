@@ -1,0 +1,91 @@
+results800-801.log
+0. exp605
+
+Epoch 1/1
+    Train  — loss: 0.4315  acc: 0.6071
+    Val    — loss: 0.2778  acc: 0.6060
+    Val κ: 0.8653  AUC: 0.9388  Sens: 0.5850  Spec: 0.9141  F1-macro: 0.4299  LR: 1.00e-03
+    Per-class F1:  No D=0.933  Mild=0.525  Mode=0.131  Seve=0.293  PDR=0.267
+  ★ New best model saved (κ=0.8653  F1=0.4299)
+  ◆ New best composite model (score=0.6911  κ=0.8653  F1=0.4299)
+2026-04-17 17:54:22,483 [INFO] src.train: Test Results | QWK: 0.8300 | Macro F1: 0.4046 | Acc: 0.5964
+2026-04-17 17:54:22,483 [INFO] __main__: === Experiment exp605_a1v3_ordsupcon_40ep Complete ===
+2026-04-17 17:54:22,483 [INFO] __main__:   qwk: 0.8300
+2026-04-17 17:54:22,483 [INFO] __main__:   accuracy: 0.5964
+2026-04-17 17:54:22,483 [INFO] __main__:   macro_f1: 0.4046
+2026-04-17 17:54:22,483 [INFO] __main__:   sensitivity: 0.5375
+2026-04-17 17:54:22,483 [INFO] __main__:   specificity: 0.9115
+2026-04-17 17:54:22,483 [INFO] __main__:   f1_No DR: 0.9377
+2026-04-17 17:54:22,483 [INFO] __main__:   f1_Mild: 0.4724
+2026-04-17 17:54:22,483 [INFO] __main__:   f1_Moderate: 0.1548
+2026-04-17 17:54:22,483 [INFO] __main__:   f1_Severe: 0.2619
+2026-04-17 17:54:22,483 [INFO] __main__:   f1_Proliferative: 0.1961
+2026-04-17 17:54:22,483 [INFO] __main__:   auc_roc: 0.9145
+2026-04-17 17:54:22,483 [INFO] __main__:   ece: 0.1326
+
+
+1. exp800
+
+python scripts/wise_ft.py --exp 701 \
+        --pretrained checkpoints/exp200_a2_ordsupcon_eyepacs/exp200_a2_ordsupcon_eyepacs_backbone.pth \
+        --finetuned checkpoints/exp701_h1_ordsupcon_d1recipe/exp701_h1_ordsupcon_d1recipe_best.pth \
+        --alphas 0.32 0.34 0.36 0.38 0.4 0.42 0.44 0.46 0.48
+[α=0.00] QWK=0.8314  MacroF1=0.4864  Severe=0.1923
+[α=0.20] QWK=0.8496  MacroF1=0.5259  Severe=0.3836
+[α=0.30] QWK=0.8616  MacroF1=0.5428  Severe=0.3947
+[α=0.50] QWK=0.8755  MacroF1=0.5644  Severe=0.3514
+[α=0.70] QWK=0.8961  MacroF1=0.6165  Severe=0.3492
+[α=0.80] QWK=0.9016  MacroF1=0.6539  Severe=0.4138
+[α=1.00] QWK=0.9028  MacroF1=0.6856  Severe=0.4308
+
+Sweep results saved to /workspace/dr-nrt/results/exp701_h1_ordsupcon_d1recipe/wiseft_sweep.csv
+
+
+python scripts/wise_ft.py --exp 701 \
+        --pretrained checkpoints/exp605_a1v3_ordsupcon_40ep/exp605_a1v3_ordsupcon_40ep_backbone.pth \
+        --finetuned checkpoints/exp701_h1_ordsupcon_d1recipe/exp701_h1_ordsupcon_d1recipe_best.pth \
+        --alphas 0.0 0.2 0.3 0.5 0.7 0.8 1.0
+[α=0.00] QWK=0.0062  MacroF1=0.0370  Severe=0.0000
+[α=0.20] QWK=0.5935  MacroF1=0.2718  Severe=0.2404
+[α=0.30] QWK=0.1267  MacroF1=0.1119  Severe=0.0000
+[α=0.50] QWK=0.0000  MacroF1=0.0370  Severe=0.0000
+[α=0.70] QWK=0.4103  MacroF1=0.2819  Severe=0.0000
+[α=0.80] QWK=0.7589  MacroF1=0.4105  Severe=0.1833
+[α=1.00] QWK=0.9028  MacroF1=0.6856  Severe=0.4308
+
+
+python scripts/wise_ft.py --exp 300 \
+        --pretrained checkpoints/exp200_a2_ordsupcon_eyepacs/exp200_a2_ordsupcon_eyepacs_backbone.pth \
+        --finetuned checkpoints/exp300_d1_dropout_cosine/exp300_d1_dropout_cosine_best.pth \
+        --alphas 0.0 0.2 0.3 0.5 0.7 0.8 1.0
+[α=0.00] QWK=0.0011  MacroF1=0.0201  Severe=0.1007
+[α=0.20] QWK=-0.0782  MacroF1=0.0253  Severe=0.1264
+[α=0.30] QWK=0.1086  MacroF1=0.0483  Severe=0.1174
+[α=0.50] QWK=0.7144  MacroF1=0.2183  Severe=0.1716
+[α=0.70] QWK=0.7323  MacroF1=0.3293  Severe=0.2370
+[α=0.80] QWK=0.7433  MacroF1=0.4048  Severe=0.2434
+[α=1.00] QWK=0.9159  MacroF1=0.6945  Severe=0.3830
+
+Sweep results saved to /workspace/dr-nrt/results/exp300_d1_dropout_cosine/wiseft_sweep.csv
+
+2. exp801
+
+- H1
+python scripts/ncm_eval.py --exp 701 --ckpt checkpoints/exp701_h1_ordsupcon_d1recipe/exp701_h1_ordsupcon_d1recipe_best.pth
+[val] qwk=0.9093  accuracy=0.8287  macro_f1=0.6960  sensitivity=0.7080  specificity=0.9577  f1_No DR=0.9849  f1_Mild=0.6931  f1_Moderate=0.7429  f1_Severe=0.4923  f1_Proliferative=0.5667  auc_roc=0.9347  ece=0.5969
+[test] qwk=0.8923  accuracy=0.7982  macro_f1=0.6436  sensitivity=0.6480  specificity=0.9498  f1_No DR=0.9743  f1_Mild=0.5600  f1_Moderate=0.7241  f1_Severe=0.4118  f1_Proliferative=0.5479  auc_roc=0.9029  ece=0.5668
+
+- A2
+python scripts/ncm_eval.py --exp 200 --ckpt checkpoints/exp200_a2_ordsupcon_eyepacs/exp200_a2_ordsupcon_eyepacs_backbone.pth 
+[val] qwk=0.8579  accuracy=0.7409  macro_f1=0.5483  sensitivity=0.5437  specificity=0.9344  f1_No DR=0.9746  f1_Mild=0.4646  f1_Moderate=0.6025  f1_Severe=0.2353  f1_Proliferative=0.4643  auc_roc=0.8858  ece=0.5167
+[test] qwk=0.8060  accuracy=0.7055  macro_f1=0.4965  sensitivity=0.4970  specificity=0.9251  f1_No DR=0.9584  f1_Mild=0.3509  f1_Moderate=0.5674  f1_Severe=0.2162  f1_Proliferative=0.3896  auc_roc=0.8715  ece=0.4814
+
+- A1-v3
+python scripts/ncm_eval.py --exp 605 --ckpt checkpoints/exp605_a1v3_ordsupcon_40ep/exp605_a1v3_ordsupcon_40ep_backbone.pth 
+[val] qwk=0.8489  accuracy=0.7709  macro_f1=0.4316  sensitivity=0.4498  specificity=0.9338  f1_No DR=0.9576  f1_Mild=0.0755  f1_Moderate=0.7327  f1_Severe=0.0000  f1_Proliferative=0.3922  auc_roc=0.8637  ece=0.5506
+[test] qwk=0.8593  accuracy=0.7800  macro_f1=0.4485  sensitivity=0.4649  specificity=0.9380  f1_No DR=0.9672  f1_Mild=0.1250  f1_Moderate=0.7443  f1_Severe=0.0000  f1_Proliferative=0.4062  auc_roc=0.8457  ece=0.5595
+
+- D1
+ python scripts/ncm_eval.py --exp 300 --ckpt checkpoints/exp300_d1_dropout_cosine/exp300_d1_dropout_cosine_best.pth 
+[val] qwk=0.9211  accuracy=0.8758  macro_f1=0.7915  sensitivity=0.7806  specificity=0.9664  f1_No DR=0.9720  f1_Mild=0.8000  f1_Moderate=0.8140  f1_Severe=0.6415  f1_Proliferative=0.7302  auc_roc=0.9618  ece=0.6499
+[test] qwk=0.8845  accuracy=0.8109  macro_f1=0.6378  sensitivity=0.6163  specificity=0.9501  f1_No DR=0.9631  f1_Mild=0.5185  f1_Moderate=0.7758  f1_Severe=0.3913  f1_Proliferative=0.5405  auc_roc=0.9220  ece=0.5849

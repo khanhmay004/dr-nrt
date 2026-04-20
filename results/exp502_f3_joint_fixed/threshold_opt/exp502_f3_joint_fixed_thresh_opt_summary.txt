@@ -1,0 +1,51 @@
+
+============================================================
+argmax
+============================================================
+  qwk: 0.8792
+  accuracy: 0.8255
+  macro_f1: 0.6763
+  sensitivity: 0.6749
+  specificity: 0.9575
+  f1_No DR: 0.9813
+  f1_Mild: 0.6240
+  f1_Moderate: 0.7687
+  f1_Severe: 0.4074
+  f1_Proliferative: 0.6000
+  auc_roc: 0.9507
+  ece: 0.0344
+
+============================================================
+expected_grade_opt
+============================================================
+  qwk: 0.8969
+  accuracy: 0.8164
+  macro_f1: 0.6330
+  sensitivity: 0.6222
+  specificity: 0.9544
+  f1_No DR: 0.9774
+  f1_Mild: 0.6195
+  f1_Moderate: 0.7781
+  f1_Severe: 0.2545
+  f1_Proliferative: 0.5352
+  auc_roc: 0.9507
+  ece: 0.0344
+
+============================================================
+cumulative_opt
+============================================================
+  qwk: 0.8824
+  accuracy: 0.8236
+  macro_f1: 0.6684
+  sensitivity: 0.6668
+  specificity: 0.9571
+  f1_No DR: 0.9794
+  f1_Mild: 0.6349
+  f1_Moderate: 0.7742
+  f1_Severe: 0.3860
+  f1_Proliferative: 0.5676
+  auc_roc: 0.9507
+  ece: 0.0344
+
+Best strategy: expected_grade_opt
+Optimized thresholds: [0.5206629991531371, 1.396066117286681, 2.7367979288101196, 3.308078718185424]

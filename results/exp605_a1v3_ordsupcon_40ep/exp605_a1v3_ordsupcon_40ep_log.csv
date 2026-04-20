@@ -1,0 +1,2 @@
+epoch,train_loss,val_loss,val_qwk,val_macro_f1,val_composite,lr
+1,0.431502,0.277813,0.865317,0.429876,0.69114,0.001
