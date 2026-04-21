@@ -49,11 +49,19 @@ APTOS_IMG_DIR = ROOT_DIR / "data" / "train_images"
 def get_failure_cases(preds_csv: Path, n_cases: int = 10) -> pd.DataFrame:
     """Get representative failure cases across different error types."""
     df = pd.read_csv(preds_csv)
-    errors = df[df["true_label"] != df["pred_label"]].copy()
+
+    # Handle both pred_label (regular) and mc_prediction (MC Dropout) column names
+    pred_col = "pred_label" if "pred_label" in df.columns else "mc_prediction"
+
+    errors = df[df["true_label"] != df[pred_col]].copy()
 
     if len(errors) == 0:
         print("No errors found!")
         return pd.DataFrame()
+
+    # Standardize column name
+    if pred_col == "mc_prediction":
+        errors["pred_label"] = errors["mc_prediction"]
 
     # Categorize errors
     errors["error_type"] = errors.apply(
