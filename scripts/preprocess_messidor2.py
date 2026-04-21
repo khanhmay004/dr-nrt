@@ -26,7 +26,7 @@ from src.dataset import ben_graham_preprocess
 
 
 # ── Messidor-2 raw paths ─────────────────────────────────────────────────────
-MESSIDOR2_DIR = ROOT_DIR / "messidor-2"
+MESSIDOR2_DIR = ROOT_DIR / "data" / "messidor-2"
 MESSIDOR2_IMG_DIR = MESSIDOR2_DIR / "IMAGES"
 MESSIDOR2_CSV = MESSIDOR2_DIR / "messidor_data.csv"
 
