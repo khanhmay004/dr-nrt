@@ -259,6 +259,10 @@ def main():
                                 out_dir / f"{stem}_cls_report.txt")
     save_predictions(test_codes, test_eg, best_preds, test_targets,
                      out_dir / f"{stem}_preds.csv")
+    np.savez(out_dir / f"ensemble_{tag}_test_probs.npz",
+             id_code=np.array(test_codes),
+             true_label=test_targets,
+             probs=test_probs)
 
     with open(out_dir / f"ensemble_{tag}_summary.txt", "w") as f:
         f.write(f"Members: {[c.exp_name for c in configs]}\n")
