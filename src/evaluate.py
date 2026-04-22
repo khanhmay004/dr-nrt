@@ -127,7 +127,7 @@ def compute_metrics(
     metrics["qwk"] = quadratic_weighted_kappa(y_true, y_pred_classes)
     metrics["accuracy"] = accuracy_score(y_true, y_pred_classes)
     metrics["macro_f1"] = f1_score(y_true, y_pred_classes, average="macro", zero_division=0)
-    metrics["sensitivity"] = recall_score(y_true, y_pred_classes, average="macro", zero_division=0)
+    metrics["macro_recall"] = recall_score(y_true, y_pred_classes, average="macro", zero_division=0)
 
     cm = confusion_matrix(y_true, y_pred_classes, labels=list(range(NUM_CLASSES)))
     specificity_per_class = []
@@ -137,7 +137,18 @@ def compute_metrics(
         fp = cm[:, c].sum() - tp
         tn = cm.sum() - tp - fn - fp
         specificity_per_class.append(tn / (tn + fp) if (tn + fp) > 0 else 0.0)
-    metrics["specificity"] = float(np.mean(specificity_per_class))
+    metrics["macro_specificity"] = float(np.mean(specificity_per_class))
+
+    # Binary referable-DR (grade >= 2) — the clinical metric used in the thesis.
+    yb_true = (np.asarray(y_true) >= 2).astype(int)
+    yb_pred = (np.asarray(y_pred_classes) >= 2).astype(int)
+    b_tn, b_fp, b_fn, b_tp = confusion_matrix(yb_true, yb_pred, labels=[0, 1]).ravel()
+    metrics["referable_sensitivity"] = float(b_tp / (b_tp + b_fn)) if (b_tp + b_fn) > 0 else 0.0
+    metrics["referable_specificity"] = float(b_tn / (b_tn + b_fp)) if (b_tn + b_fp) > 0 else 0.0
+    # Backwards-compatible aliases: callers that read "sensitivity"/"specificity"
+    # get the binary referable values (what the thesis tables expect).
+    metrics["sensitivity"] = metrics["referable_sensitivity"]
+    metrics["specificity"] = metrics["referable_specificity"]
 
     per_class_f1 = f1_score(y_true, y_pred_classes, average=None, labels=list(range(NUM_CLASSES)), zero_division=0)
     for i, name in enumerate(CLASS_NAMES):
