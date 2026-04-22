@@ -688,6 +688,29 @@ EXPERIMENTS: dict[int, ExpConfig] = {
         oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
     ),
 
+    # H1' (a.k.a. H5): A1-v3 (APTOS OrdSupCon) backbone + D1 recipe — apples-to-apples
+    # twin of H1 (701) which used the A2 (EyePACS) backbone. Tells us whether the
+    # H1 advantage came from EyePACS pre-training diversity or from the D1 recipe
+    # itself. Every other knob matches exp701 exactly: focal loss, class weights,
+    # GeM, dropout 0.3, wd 1e-4, cosine_decay, 80 epochs, freeze_epochs=5,
+    # lr_finetune=1e-4, oversample_target=1000.
+    705: ExpConfig(
+        exp_id=705, name="h5_a1_d1recipe",
+        aug_level=2, loss_type="focal", use_class_weights=True,
+        use_gem=True,
+        head_dropout=0.3,
+        weight_decay=1e-4,
+        scheduler="cosine_decay",
+        total_epochs=80,
+        freeze_epochs=5,
+        lr_finetune=1e-4,
+        load_backbone=str(
+            CHECKPOINT_DIR / "exp605_a1v3_ordsupcon_40ep" / "exp605_a1v3_ordsupcon_40ep_backbone.pth"
+        ),
+        oversample_target=1000,
+        oversample_dir=str(ROOT_DIR / "data" / "train_oversampled"),
+    ),
+
     # === Phase I: Rescue Plan (docs/07-improve-model.md) ===
 
     # I1: EMD² replaces Focal on D1 recipe
