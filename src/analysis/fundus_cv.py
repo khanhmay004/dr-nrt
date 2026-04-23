@@ -165,3 +165,29 @@ def hemorrhage_candidates(
         if stats[i, cv2.CC_STAT_AREA] >= 100:
             out[lab == i] = 1
     return out * fov_mask
+
+
+def lesion_evidence_map(
+    image_bg_rgb: np.ndarray,
+    dilate_k: int = 9,
+    fov_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Soft lesion-evidence map in {0, 1} float32 for Lesion-Evidence-Weighted CAM.
+
+    Union of MA, hemorrhage, and hard-exudate candidate masks, dilated by an
+    elliptical kernel of side ``dilate_k`` so that CAM energy near a lesion
+    (but not exactly centred on one) is still preserved. Intersected with the
+    retinal FOV. Returned as float32 so the caller can blend it as
+    ``gate = (1 - alpha) + alpha * evidence``.
+    """
+    if fov_mask is None:
+        fov_mask = retinal_fov_mask(image_bg_rgb)
+    union = (
+        ma_candidates(image_bg_rgb, fov_mask=fov_mask)
+        | hemorrhage_candidates(image_bg_rgb, fov_mask=fov_mask)
+        | hard_exudate_candidates(image_bg_rgb, fov_mask=fov_mask)
+    ).astype(np.uint8)
+    if dilate_k > 1:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_k, dilate_k))
+        union = cv2.dilate(union, kernel, iterations=1)
+    return (union & fov_mask).astype(np.float32)

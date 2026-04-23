@@ -265,3 +265,136 @@ def predict_probs(model: nn.Module, image_tensor: torch.Tensor) -> np.ndarray:
             probs[idx] = 1.0
             return probs
         return torch.softmax(logits, dim=1)[0].cpu().numpy()
+
+
+# ---------------------------------------------------------------------------
+# Lesion-Evidence-Weighted CAM (Method A) + Annotated Overlay (Method C)
+# ---------------------------------------------------------------------------
+
+
+def lesion_weighted_cam(
+    base_cam: np.ndarray,
+    image_bg_rgb: np.ndarray,
+    alpha: float = 0.85,
+    dilate_k: int = 9,
+) -> np.ndarray:
+    """Lesion-Evidence-Weighted CAM (LEW-CAM).
+
+    Gates ``base_cam`` by a soft lesion-evidence map derived from classical-CV
+    proxies in ``src.analysis.fundus_cv``. ``alpha`` controls gating strength:
+
+    * ``alpha == 0.0`` — returns ``base_cam`` unchanged (no gating).
+    * ``alpha == 1.0`` — hard mask: CAM is zero outside lesion evidence.
+    * ``alpha == 0.85`` (default) — non-lesion CAM attenuated to 15%, lesion
+      regions keep full CAM value. Good balance for visualization.
+
+    For Grade-0 images the evidence map is mostly empty by design, so the
+    returned heatmap is near-dark. That is the correct behavior.
+
+    Args:
+        base_cam: 2-D saliency map in [0, 1], any resolution.
+        image_bg_rgb: Ben-Graham-processed uint8 RGB image at the resolution
+                      you want the gate computed at (usually IMAGE_SIZE).
+        alpha: Gating strength in [0, 1].
+        dilate_k: Dilation kernel side for the lesion union (px).
+
+    Returns:
+        A 2-D map in [0, 1] at the same resolution as ``base_cam``.
+    """
+    from src.analysis.fundus_cv import lesion_evidence_map
+
+    evidence = lesion_evidence_map(image_bg_rgb, dilate_k=dilate_k)
+    if evidence.shape != base_cam.shape:
+        evidence = cv2.resize(
+            evidence,
+            (base_cam.shape[1], base_cam.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    gate = (1.0 - alpha) + alpha * evidence
+    return _normalize_cam(base_cam.astype(np.float32) * gate)
+
+
+def render_lesion_annotated_panel(
+    image_bg_rgb: np.ndarray,
+    cam: np.ndarray,
+    pred_grade: int,
+    true_grade: int | None = None,
+    top_pct: float = 0.20,
+    heat_alpha: float = 0.30,
+) -> tuple[np.ndarray, dict]:
+    """Clinician-facing visualization.
+
+    Renders the Ben-Graham image with:
+
+    * a faint jet-colormap CAM overlay (top-k region highlighted),
+    * color-coded circles around lesion candidates **inside** the CAM top-k
+      region (red=MA, orange=HE, yellow=EX),
+    * a caption summarising predicted grade and lesion counts.
+
+    Args:
+        image_bg_rgb: [H, W, 3] uint8, Ben-Graham output.
+        cam: 2-D saliency map in [0, 1]; resized to [H, W] if needed.
+        pred_grade: Predicted DR grade (0–4).
+        true_grade: Ground-truth DR grade, if known; included in caption.
+        top_pct: Quantile threshold for the CAM "attended region" (default 0.20).
+        heat_alpha: Opacity of the CAM overlay (0 = none, 1 = fully opaque).
+
+    Returns:
+        canvas: [H, W, 3] uint8 RGB rendered image.
+        meta:   dict with ``counts`` (per lesion type inside CAM top-k) and
+                ``caption`` (natural-language summary).
+    """
+    from src.analysis.fundus_cv import (
+        retinal_fov_mask,
+        ma_candidates,
+        hemorrhage_candidates,
+        hard_exudate_candidates,
+    )
+
+    H, W = image_bg_rgb.shape[:2]
+    cam_resized = cam
+    if cam.shape != (H, W):
+        cam_resized = cv2.resize(
+            cam.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR
+        )
+
+    thr = float(np.quantile(cam_resized, 1.0 - top_pct))
+    top_mask = cam_resized >= thr
+
+    fov = retinal_fov_mask(image_bg_rgb)
+    lesions = {
+        "ma":         (ma_candidates(image_bg_rgb, fov_mask=fov),          (255,   0,   0)),
+        "hemorrhage": (hemorrhage_candidates(image_bg_rgb, fov_mask=fov),  (255, 140,   0)),
+        "exudate":    (hard_exudate_candidates(image_bg_rgb, fov_mask=fov),(255, 220,   0)),
+    }
+
+    # Faint jet-colormap overlay, blended with the fundus
+    heat_u8 = np.clip(cam_resized * 255.0, 0, 255).astype(np.uint8)
+    heat_bgr = cv2.applyColorMap(heat_u8, cv2.COLORMAP_JET)
+    heat_rgb = cv2.cvtColor(heat_bgr, cv2.COLOR_BGR2RGB)
+    canvas = cv2.addWeighted(
+        image_bg_rgb, 1.0 - heat_alpha, heat_rgb, heat_alpha, 0.0
+    ).astype(np.uint8)
+
+    # Draw circles around lesion components that intersect the CAM top-k region
+    counts: dict[str, int] = {}
+    for name, (mask, color) in lesions.items():
+        inside = (mask.astype(bool) & top_mask).astype(np.uint8)
+        nlab, _, stats, centroids = cv2.connectedComponentsWithStats(inside)
+        counts[name] = 0
+        for i in range(1, nlab):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < 3:
+                continue
+            cx, cy = int(centroids[i, 0]), int(centroids[i, 1])
+            r = max(6, int(np.sqrt(area / np.pi)) + 4)
+            cv2.circle(canvas, (cx, cy), r, color, thickness=2)
+            counts[name] += 1
+
+    caption = (
+        f"Pred: Grade {pred_grade}"
+        + (f" | True: Grade {true_grade}" if true_grade is not None else "")
+        + f" | In attended region: "
+        f"{counts['ma']} MA, {counts['hemorrhage']} HE, {counts['exudate']} EX"
+    )
+    return canvas, {"counts": counts, "caption": caption}
