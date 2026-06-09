@@ -1,0 +1,257 @@
+"""Generate notebooks/aptos-ensemble-d1-h1-h5.ipynb — logit-averaging ensemble of D1+H1+H5.
+
+Run from repo root:
+    python scripts/build_kaggle_ensemble_notebook.py
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+NB_PATH = Path("notebooks/aptos-ensemble-d1-h1-h5.ipynb")
+
+
+def md(source: str) -> dict:
+    return {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": source.splitlines(keepends=True),
+    }
+
+
+def code(source: str) -> dict:
+    return {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": source.splitlines(keepends=True),
+    }
+
+
+CELLS = [
+    md(
+        "# APTOS 2019 — D1 + H1 + H5 ensemble submission\n"
+        "\n"
+        "Logit-averaging ensemble of three exp300-architecture checkpoints:\n"
+        "- **D1** (`exp300`) — ImageNet init\n"
+        "- **H1** (`exp701`) — EyePACS OrdSupCon backbone init\n"
+        "- **H5** (`exp705`) — APTOS OrdSupCon (A1-v3) backbone init\n"
+        "\n"
+        "All three share the same architecture (ResNet50 + GeM + Dropout(0.3)+Linear) and the same\n"
+        "Ben-Graham preprocessing — they only differ in how the backbone was initialized before\n"
+        "fine-tuning. Diverse inits → ensemble usually adds +0.005 to +0.02 QWK over best single.\n"
+        "\n"
+        "**Before running:** upload each checkpoint as a Kaggle dataset and edit `CHECKPOINT_PATHS`\n"
+        "in the Configuration cell to match the `/kaggle/input/<slug>` paths Kaggle assigns.\n"
+    ),
+    code(
+        "# Cell 1 — imports & device\n"
+        "import os\n"
+        "import cv2\n"
+        "import numpy as np\n"
+        "import pandas as pd\n"
+        "import torch\n"
+        "import torch.nn as nn\n"
+        "import torch.nn.functional as F\n"
+        "import torchvision.models as tvm\n"
+        "from torch.utils.data import Dataset, DataLoader\n"
+        "from tqdm import tqdm\n"
+        "\n"
+        "DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\n"
+        "print(f'PyTorch: {torch.__version__}, Device: {DEVICE}')\n"
+        "if torch.cuda.is_available():\n"
+        "    print(f'GPU: {torch.cuda.get_device_name(0)}')\n"
+    ),
+    code(
+        "# Cell 2 — configuration\n"
+        "NUM_CLASSES = 5\n"
+        "IMAGE_SIZE  = 512\n"
+        "BATCH_SIZE  = 32\n"
+        "NUM_WORKERS = 2\n"
+        "\n"
+        "IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)\n"
+        "IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)\n"
+        "\n"
+        "# === EDIT THESE FOR YOUR KAGGLE DATASETS ===\n"
+        "# Upload each checkpoint folder as a separate Kaggle dataset (or one combined dataset).\n"
+        "# The keys ('d1', 'h1', 'h5') are just labels for logging.\n"
+        "CHECKPOINT_PATHS = {\n"
+        "    'd1': '/kaggle/input/exp300-d1-dropout-cosine/exp300_d1_dropout_cosine_best.pth',\n"
+        "    'h1': '/kaggle/input/exp701-h1-ordsupcon-d1recipe/exp701_h1_ordsupcon_d1recipe_best.pth',\n"
+        "    'h5': '/kaggle/input/exp705-h5-a1-d1recipe/exp705_h5_a1_d1recipe_best.pth',\n"
+        "}\n"
+        "\n"
+        "TEST_CSV        = '/kaggle/input/aptos2019-blindness-detection/test.csv'\n"
+        "TEST_IMAGES_DIR = '/kaggle/input/aptos2019-blindness-detection/test_images'\n"
+        "OUTPUT_PATH     = '/kaggle/working/submission.csv'\n"
+        "\n"
+        "# Architecture hyperparameters (must match training — identical across D1/H1/H5)\n"
+        "HEAD_DROPOUT = 0.3\n"
+        "GEM_P        = 3.0\n"
+    ),
+    code(
+        "# Cell 3 — model: ResNet50 + GeM + Dropout(0.3)+Linear head (mirrors src/models.py)\n"
+        "class GeM(nn.Module):\n"
+        "    def __init__(self, p: float = 3.0, eps: float = 1e-6):\n"
+        "        super().__init__()\n"
+        "        self.p = nn.Parameter(torch.ones(1) * p)\n"
+        "        self.eps = eps\n"
+        "\n"
+        "    def forward(self, x):\n"
+        "        return F.avg_pool2d(\n"
+        "            x.clamp(min=self.eps).pow(self.p),\n"
+        "            (x.size(-2), x.size(-1)),\n"
+        "        ).pow(1.0 / self.p)\n"
+        "\n"
+        "\n"
+        "def build_exp300_model():\n"
+        "    # weights=None — checkpoint will overwrite, and Kaggle's torchvision has known issues\n"
+        "    # loading ImageNet weights (see notebooks/kaggle_runner.ipynb).\n"
+        "    model = tvm.resnet50(weights=None)\n"
+        "    model.avgpool = GeM(p=GEM_P)\n"
+        "    in_features = model.fc.in_features\n"
+        "    model.fc = nn.Sequential(\n"
+        "        nn.Dropout(p=HEAD_DROPOUT),\n"
+        "        nn.Linear(in_features, NUM_CLASSES),\n"
+        "    )\n"
+        "    return model\n"
+    ),
+    code(
+        "# Cell 4 — Ben-Graham preprocessing (verbatim from src/dataset.py: bbox crop)\n"
+        "def ben_graham_preprocess(image: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:\n"
+        "    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)\n"
+        "    _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)\n"
+        "    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n"
+        "    if contours:\n"
+        "        largest = max(contours, key=cv2.contourArea)\n"
+        "        x, y, w, h = cv2.boundingRect(largest)\n"
+        "        image = image[y:y + h, x:x + w]\n"
+        "    image = cv2.resize(image, (size, size), interpolation=cv2.INTER_LINEAR)\n"
+        "    gauss = cv2.GaussianBlur(image, (0, 0), sigmaX=size / 30)\n"
+        "    image = cv2.addWeighted(image, 4, gauss, -4, 128)\n"
+        "    return image\n"
+    ),
+    code(
+        "# Cell 5 — test dataset (mirrors DRDataset image-load + normalize sequence)\n"
+        "class APTOSTestDataset(Dataset):\n"
+        "    def __init__(self, csv_path, img_dir, size=IMAGE_SIZE):\n"
+        "        self.df = pd.read_csv(csv_path)         # 'id_code' column\n"
+        "        self.img_dir = img_dir\n"
+        "        self.size = size\n"
+        "\n"
+        "    def __len__(self):\n"
+        "        return len(self.df)\n"
+        "\n"
+        "    def __getitem__(self, idx):\n"
+        "        code = self.df.iloc[idx]['id_code']\n"
+        "        image = cv2.imread(os.path.join(self.img_dir, f'{code}.png'))   # BGR\n"
+        "        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)\n"
+        "        image = ben_graham_preprocess(image, self.size)\n"
+        "        image_t = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0\n"
+        "        for c in range(3):\n"
+        "            image_t[c] = (image_t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]\n"
+        "        return image_t, code\n"
+    ),
+    code(
+        "# Cell 6 — load all three checkpoints\n"
+        "def load_model(ckpt_path: str) -> nn.Module:\n"
+        "    m = build_exp300_model().to(DEVICE)\n"
+        "    sd = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)\n"
+        "    if isinstance(sd, dict) and 'model_state_dict' in sd:\n"
+        "        sd = sd['model_state_dict']\n"
+        "    result = m.load_state_dict(sd, strict=True)\n"
+        "    m.eval()\n"
+        "    return m\n"
+        "\n"
+        "models = {}\n"
+        "for name, path in CHECKPOINT_PATHS.items():\n"
+        "    models[name] = load_model(path)\n"
+        "    print(f'  [{name}] loaded {os.path.basename(path)}')\n"
+        "\n"
+        "total_params = sum(sum(p.numel() for p in m.parameters()) for m in models.values())\n"
+        "print(f'Ensemble: {len(models)} models, total params: {total_params/1e6:.1f}M')\n"
+    ),
+    code(
+        "# Cell 7 — DataLoader\n"
+        "test_ds = APTOSTestDataset(TEST_CSV, TEST_IMAGES_DIR)\n"
+        "test_loader = DataLoader(\n"
+        "    test_ds, batch_size=BATCH_SIZE, shuffle=False,\n"
+        "    num_workers=NUM_WORKERS, pin_memory=True,\n"
+        ")\n"
+        "print(f'Test images: {len(test_ds)}')\n"
+    ),
+    code(
+        "# Cell 8 — ensemble inference (logit averaging across D1 + H1 + H5)\n"
+        "all_ids, all_preds = [], []\n"
+        "with torch.no_grad():\n"
+        "    for images, codes in tqdm(test_loader, desc='Ensemble inference'):\n"
+        "        images = images.to(DEVICE, non_blocking=True)\n"
+        "        # Sum raw logits across the 3 models, then argmax (logit averaging).\n"
+        "        # Equivalent to averaging since argmax is scale-invariant within a row.\n"
+        "        ensemble_logits = torch.zeros(images.size(0), NUM_CLASSES, device=DEVICE)\n"
+        "        for m in models.values():\n"
+        "            ensemble_logits += m(images)\n"
+        "        preds = ensemble_logits.argmax(dim=1).cpu().numpy()\n"
+        "        all_preds.extend(preds.tolist())\n"
+        "        all_ids.extend(codes)\n"
+        "\n"
+        "dist = pd.Series(all_preds).value_counts().sort_index().to_dict()\n"
+        "print(f'Total predictions: {len(all_preds)}')\n"
+        "print(f'Ensemble grade distribution: {dist}')\n"
+    ),
+    code(
+        "# Cell 9 — write submission\n"
+        "submission = pd.DataFrame({'id_code': all_ids, 'diagnosis': all_preds})\n"
+        "submission.to_csv(OUTPUT_PATH, index=False)\n"
+        "print(f'Wrote {OUTPUT_PATH}  shape={submission.shape}')\n"
+        "submission.head()\n"
+    ),
+]
+
+
+METADATA = {
+    "kernelspec": {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    },
+    "language_info": {
+        "name": "python",
+        "version": "3.12.12",
+        "mimetype": "text/x-python",
+        "codemirror_mode": {"name": "ipython", "version": 3},
+        "pygments_lexer": "ipython3",
+        "nbconvert_exporter": "python",
+        "file_extension": ".py",
+    },
+    "kaggle": {
+        "accelerator": "nvidiaTeslaT4",
+        "dataSources": [
+            {
+                "sourceType": "competition",
+                "sourceId": 14774,
+                "databundleVersionId": 875431,
+            },
+        ],
+        "isInternetEnabled": False,
+        "language": "python",
+        "sourceType": "notebook",
+        "isGpuEnabled": True,
+    },
+}
+
+
+def main():
+    nb = {
+        "cells": CELLS,
+        "metadata": METADATA,
+        "nbformat": 4,
+        "nbformat_minor": 4,
+    }
+    NB_PATH.write_text(json.dumps(nb, indent=1), encoding="utf-8")
+    print(f"Wrote {NB_PATH}  ({len(CELLS)} cells)")
+
+
+if __name__ == "__main__":
+    main()

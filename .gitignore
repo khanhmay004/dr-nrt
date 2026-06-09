@@ -1,0 +1,74 @@
+# ===== Git history backup (local safety copy, never commit) =====
+.git_backup*/
+
+# ===== Python =====
+node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# ===== Large data & generated artifacts (regenerable, kept local) =====
+data/
+checkpoints/
+results/
+Eyepacs/
+messidor-2/
+B_Disease_Grading/
+.agents/
+.claude/
+docs/_private/
+
+# ===== Model weights & archives =====
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.onnx
+*.pkl
+*.npy
+*.npz
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.o
+*.so
+*.exe
+
+# ===== Figures: keep curated PNGs only; drop PDFs and heavy galleries =====
+*.pdf
+figures/aug_per_transform*.png
+figures/aug_pipeline_samples*.png
+figures/quality_extremes_failures.png
+figures/sharpness_q1_q4_samples.png
+figures/high_margin_error_gallery.png
+figures/high_risk_prolif_to_mild_slide.png
+figures/mislabel_gallery.png
+figures/gradcam_pairs_slide.png
+figures/gradcam_per_pair_gallery.png
+figures/gradcam_correct_vs_wrong_prolif.png
+figures/misclassified_cases_overview.png
+figures/margin_distribution.png
+
+# ===== IDE / OS =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== Environment / logs / temp =====
+.env
+.env.local
+*.log
+npm-debug.log*
+*.tmp
+*.bak
+tmp_*.py
