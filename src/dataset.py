@@ -12,6 +12,7 @@ from src.config import (
     IMAGENET_MEAN,
     IMAGENET_STD,
     IMAGE_SIZE,
+    NUM_CLASSES,
     TEST_CSV,
     TEST_IMG_DIR,
     TRAIN_CSV,
@@ -45,6 +46,26 @@ def load_labels(csv_path: Path) -> dict[str, int]:
         for row in reader:
             labels[row["id_code"]] = int(row["diagnosis"])
     return labels
+
+
+def load_fundus_image(img_path: Path | str, size: int = IMAGE_SIZE) -> np.ndarray:
+    """Read an image from disk (BGR->RGB) and apply Ben Graham preprocessing.
+
+    Single source of truth for how a raw fundus file becomes a model-ready RGB
+    array; used by every Dataset, TTA, and analysis path so preprocessing can
+    never silently diverge between training and inference.
+    """
+    image = cv2.imread(str(img_path))
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return ben_graham_preprocess(image, size)
+
+
+def normalize_to_tensor(image: np.ndarray) -> torch.Tensor:
+    """Convert an HWC RGB image to a CHW float tensor, /255 then ImageNet-normalised."""
+    image_t = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
+    for c in range(3):
+        image_t[c] = (image_t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
+    return image_t
 
 
 class DRDataset(Dataset):
@@ -93,17 +114,13 @@ class DRDataset(Dataset):
         code, label = self.samples[idx]
         img_path = self._find_image(code)
 
-        image = cv2.imread(str(img_path))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = ben_graham_preprocess(image, IMAGE_SIZE)
+        image = load_fundus_image(img_path)
 
         if self.transform is not None:
             augmented = self.transform(image=image)
             image = augmented["image"]
 
-        image_t = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
-        for c in range(3):
-            image_t[c] = (image_t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
+        image_t = normalize_to_tensor(image)
 
         if self.is_regression:
             target = torch.tensor(label, dtype=torch.float32)
@@ -153,17 +170,13 @@ class PseudoLabelDataset(Dataset):
         code, soft_label = self.pseudo_samples[pseudo_idx]
         img_path = self.pseudo_img_dir / f"{code}.png"
 
-        image = cv2.imread(str(img_path))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = ben_graham_preprocess(image, IMAGE_SIZE)
+        image = load_fundus_image(img_path)
 
         if self.transform is not None:
             augmented = self.transform(image=image)
             image = augmented["image"]
 
-        image_t = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
-        for c in range(3):
-            image_t[c] = (image_t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
+        image_t = normalize_to_tensor(image)
 
         target = torch.tensor(soft_label, dtype=torch.float32) if self.is_regression \
             else torch.tensor(int(soft_label), dtype=torch.long)
@@ -186,23 +199,14 @@ class ContrastiveDRDataset(Dataset):
         if not img_path.exists() and self.base_dataset.extra_img_dir is not None:
             img_path = self.base_dataset.extra_img_dir / f"{code}.png"
 
-        image = cv2.imread(str(img_path))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = ben_graham_preprocess(image, IMAGE_SIZE)
+        image = load_fundus_image(img_path)
 
         # Two independent augmented views
-        view1 = self._to_tensor(self.transform(image=image)["image"])
-        view2 = self._to_tensor(self.transform(image=image)["image"])
+        view1 = normalize_to_tensor(self.transform(image=image)["image"])
+        view2 = normalize_to_tensor(self.transform(image=image)["image"])
 
         target = torch.tensor(label, dtype=torch.long)
         return view1, view2, target, code
-
-    @staticmethod
-    def _to_tensor(image: np.ndarray) -> torch.Tensor:
-        t = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
-        for c in range(3):
-            t[c] = (t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
-        return t
 
 
 def build_datasets(
@@ -279,6 +283,24 @@ def build_datasets(
     )
 
     return train_ds, val_ds, test_ds
+
+
+def build_class_balanced_sampler(samples: list[tuple[str, int]]):
+    """Inverse-frequency ``WeightedRandomSampler`` over ``(code, label)`` samples.
+
+    Returns the sampler and the per-class counts (for logging). Callers must set
+    ``shuffle=False`` on the DataLoader, since a sampler and shuffle are mutually
+    exclusive.
+    """
+    from torch.utils.data import WeightedRandomSampler
+
+    targets = [label for _code, label in samples]
+    class_counts = [0] * NUM_CLASSES
+    for t in targets:
+        class_counts[t] += 1
+    weights = [1.0 / class_counts[t] for t in targets]
+    sampler = WeightedRandomSampler(weights, num_samples=len(targets), replacement=True)
+    return sampler, class_counts
 
 
 def build_eyepacs_dataset(cfg: ExpConfig) -> DRDataset:

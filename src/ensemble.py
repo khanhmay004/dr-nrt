@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from src.checkpoints import resolve_checkpoint
 from src.config import ExpConfig
 from src.dataset import DRDataset
 from src.evaluate import (
@@ -37,17 +38,10 @@ def run_ensemble_inference(
     base_cfg = configs[0]
 
     for cfg in configs:
-        ckpt_path = cfg.ckpt_dir / f"{cfg.exp_name}_best.pth"
-        if not ckpt_path.exists():
-            swa_path = cfg.ckpt_dir / f"{cfg.exp_name}_swa.pth"
-            pseudo_path = cfg.ckpt_dir / f"{cfg.exp_name}_pseudo.pth"
-            if pseudo_path.exists():
-                ckpt_path = pseudo_path
-            elif swa_path.exists():
-                ckpt_path = swa_path
-            else:
-                logger.warning(f"No checkpoint found for {cfg.exp_name}, skipping")
-                continue
+        ckpt_path = resolve_checkpoint(cfg)
+        if ckpt_path is None:
+            logger.warning(f"No checkpoint found for {cfg.exp_name}, skipping")
+            continue
 
         model = build_model(cfg).to(device)
         model.load_state_dict(torch.load(ckpt_path, weights_only=True))
@@ -72,14 +66,8 @@ def run_ensemble_inference(
     if base_cfg.use_optimized_thresholds and val_loader is not None:
         val_all_preds: list[np.ndarray] = []
         for cfg in configs:
-            ckpt_path = cfg.ckpt_dir / f"{cfg.exp_name}_best.pth"
-            if not ckpt_path.exists():
-                for alt in ["_pseudo.pth", "_swa.pth"]:
-                    alt_path = cfg.ckpt_dir / f"{cfg.exp_name}{alt}"
-                    if alt_path.exists():
-                        ckpt_path = alt_path
-                        break
-            if not ckpt_path.exists():
+            ckpt_path = resolve_checkpoint(cfg)
+            if ckpt_path is None:
                 continue
             model = build_model(cfg).to(device)
             model.load_state_dict(torch.load(ckpt_path, weights_only=True))

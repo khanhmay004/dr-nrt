@@ -76,43 +76,49 @@ class SWADAveragedModel:
         return self.avg
 
 
-def run_contrastive_pretraining(
-    cfg: ExpConfig,
-    contrastive_loader: DataLoader,
-    device: torch.device,
-) -> dict[str, torch.Tensor]:
-    """Run ordinal contrastive pre-training. Returns backbone state_dict (no projector)."""
-    from src.models import build_contrastive_model
+def _build_contrastive_criterion(cfg: ExpConfig) -> nn.Module:
+    """OrdSupCon (default) or RnC loss, per ``cfg.contrastive_loss_type``."""
     from src.losses import OrdSupConLoss, RnCLoss
 
-    backbone, projector = build_contrastive_model(cfg)
-    backbone = backbone.to(device)
-    projector = projector.to(device)
-
     if cfg.contrastive_loss_type == "rnc":
-        criterion: nn.Module = RnCLoss(
-            temperature=cfg.contrastive_temperature,
-        )
-    else:
-        criterion = OrdSupConLoss(
-            num_classes=NUM_CLASSES,
-            temperature=cfg.contrastive_temperature,
-        )
+        return RnCLoss(temperature=cfg.contrastive_temperature)
+    return OrdSupConLoss(
+        num_classes=NUM_CLASSES,
+        temperature=cfg.contrastive_temperature,
+    )
 
+
+def _run_contrastive_loop(
+    cfg: ExpConfig,
+    backbone: nn.Module,
+    projector: nn.Module,
+    criterion: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    *,
+    eta_min: float,
+    log_name: str,
+    loss_key: str,
+    desc: str,
+) -> dict[str, torch.Tensor]:
+    """Two-view contrastive epoch loop shared by pre-training and FLYP fine-tuning.
+
+    Trains ``backbone`` + ``projector`` with AMP (on CUDA), logs per-epoch loss
+    to ``results/<exp>/<exp>_<log_name>.csv``, saves a backbone-only checkpoint,
+    and returns its state_dict (projector discarded — not needed downstream).
+    """
     all_params = list(backbone.parameters()) + list(projector.parameters())
     optimizer = torch.optim.Adam(all_params, lr=cfg.contrastive_lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=cfg.contrastive_epochs, eta_min=1e-6,
+        optimizer, T_max=cfg.contrastive_epochs, eta_min=eta_min,
     )
 
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
     cfg.results_dir.mkdir(parents=True, exist_ok=True)
-    log_path = cfg.results_dir / f"{cfg.exp_name}_contrastive_log.csv"
+    log_path = cfg.results_dir / f"{cfg.exp_name}_{log_name}.csv"
     log_rows: list[dict[str, float]] = []
-
-    logger.info(f"Starting contrastive pre-training for {cfg.contrastive_epochs} epochs")
 
     for epoch in range(1, cfg.contrastive_epochs + 1):
         backbone.train()
@@ -121,8 +127,8 @@ def run_contrastive_pretraining(
         total_samples = 0
 
         pbar = tqdm(
-            contrastive_loader,
-            desc=f"Contrastive Epoch {epoch}/{cfg.contrastive_epochs}",
+            loader,
+            desc=f"{desc} Epoch {epoch}/{cfg.contrastive_epochs}",
             leave=True,
         )
         for batch in pbar:
@@ -161,22 +167,37 @@ def run_contrastive_pretraining(
         scheduler.step()
         avg_loss = total_loss / max(total_samples, 1)
         lr = optimizer.param_groups[0]["lr"]
-        log_rows.append({"epoch": epoch, "contrastive_loss": round(avg_loss, 6), "lr": lr})
+        log_rows.append({"epoch": epoch, loss_key: round(avg_loss, 6), "lr": lr})
+        print(f"\n{desc} Epoch {epoch}/{cfg.contrastive_epochs}  loss: {avg_loss:.4f}  lr: {lr:.2e}")
 
-        print(f"\nContrastive Epoch {epoch}/{cfg.contrastive_epochs}  loss: {avg_loss:.4f}  lr: {lr:.2e}")
-
-    # Save contrastive log
     pd.DataFrame(log_rows).to_csv(log_path, index=False)
 
-    # Save backbone-only checkpoint (projector discarded — not needed for fine-tuning or analysis)
-    backbone_ckpt_path = cfg.ckpt_dir / f"{cfg.exp_name}_backbone.pth"
-    torch.save(backbone.state_dict(), backbone_ckpt_path)
-    logger.info(f"Backbone checkpoint saved: {backbone_ckpt_path}")
-    print(f"Backbone checkpoint saved: {backbone_ckpt_path}")
-
-    # Return only backbone state_dict (discard projector)
-    logger.info("Contrastive pre-training complete. Returning backbone weights (projector discarded).")
+    # Backbone-only checkpoint (projector discarded — unused for fine-tuning/analysis)
+    backbone_ckpt = cfg.ckpt_dir / f"{cfg.exp_name}_backbone.pth"
+    torch.save(backbone.state_dict(), backbone_ckpt)
+    logger.info(f"{desc} backbone checkpoint saved: {backbone_ckpt}")
     return backbone.state_dict()
+
+
+def run_contrastive_pretraining(
+    cfg: ExpConfig,
+    contrastive_loader: DataLoader,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    """Run ordinal contrastive pre-training. Returns backbone state_dict (no projector)."""
+    from src.models import build_contrastive_model
+
+    backbone, projector = build_contrastive_model(cfg)
+    backbone = backbone.to(device)
+    projector = projector.to(device)
+    criterion = _build_contrastive_criterion(cfg)
+
+    logger.info(f"Starting contrastive pre-training for {cfg.contrastive_epochs} epochs")
+    return _run_contrastive_loop(
+        cfg, backbone, projector, criterion, contrastive_loader, device,
+        eta_min=1e-6, log_name="contrastive_log", loss_key="contrastive_loss",
+        desc="Contrastive",
+    )
 
 
 def mixup_data(
@@ -895,8 +916,7 @@ def run_flyp_finetuning(
 
     Saves a new backbone checkpoint; head is applied separately (NCM or prototype).
     """
-    from src.models import build_contrastive_model, ProjectionHead
-    from src.losses import OrdSupConLoss, RnCLoss
+    from src.models import build_contrastive_model
 
     backbone, projector = build_contrastive_model(cfg)
     backbone = backbone.to(device)
@@ -909,88 +929,10 @@ def run_flyp_finetuning(
             f"FLYP: loaded backbone — missing={len(missing)}, unexpected={len(unexpected)}"
         )
 
-    if cfg.contrastive_loss_type == "rnc":
-        criterion: nn.Module = RnCLoss(
-            temperature=cfg.contrastive_temperature,
-        )
-    else:
-        criterion = OrdSupConLoss(
-            num_classes=NUM_CLASSES,
-            temperature=cfg.contrastive_temperature,
-        )
-
-    all_params = list(backbone.parameters()) + list(projector.parameters())
-    optimizer = torch.optim.Adam(
-        all_params, lr=cfg.contrastive_lr, weight_decay=cfg.weight_decay,
-    )
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=cfg.contrastive_epochs, eta_min=1e-7,
-    )
-
-    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
-
-    cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
-    cfg.results_dir.mkdir(parents=True, exist_ok=True)
-    log_path = cfg.results_dir / f"{cfg.exp_name}_flyp_log.csv"
-    log_rows: list[dict[str, float]] = []
+    criterion = _build_contrastive_criterion(cfg)
 
     logger.info(f"FLYP fine-tuning for {cfg.contrastive_epochs} epochs at lr={cfg.contrastive_lr}")
-
-    for epoch in range(1, cfg.contrastive_epochs + 1):
-        backbone.train()
-        projector.train()
-        total_loss = 0.0
-        total_samples = 0
-
-        pbar = tqdm(
-            contrastive_loader,
-            desc=f"FLYP Epoch {epoch}/{cfg.contrastive_epochs}",
-            leave=True,
-        )
-        for batch in pbar:
-            view1, view2, targets, _codes = batch
-            view1 = view1.to(device)
-            view2 = view2.to(device)
-            targets = targets.to(device)
-
-            images = torch.cat([view1, view2], dim=0)
-            labels = torch.cat([targets, targets], dim=0)
-
-            optimizer.zero_grad()
-
-            if scaler is not None:
-                with torch.amp.autocast("cuda"):
-                    features = backbone(images)
-                features = features.float()
-                z = projector(features)
-                loss = criterion(z, labels)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                features = backbone(images)
-                z = projector(features)
-                loss = criterion(z, labels)
-                loss.backward()
-                optimizer.step()
-
-            total_loss += loss.item() * view1.size(0)
-            total_samples += view1.size(0)
-            pbar.set_postfix(loss=f"{total_loss / total_samples:.4f}")
-
-        sched.step()
-        avg_loss = total_loss / max(total_samples, 1)
-        lr = optimizer.param_groups[0]["lr"]
-        log_rows.append({"epoch": epoch, "flyp_loss": round(avg_loss, 6), "lr": lr})
-        print(
-            f"\nFLYP Epoch {epoch}/{cfg.contrastive_epochs}  "
-            f"loss: {avg_loss:.4f}  lr: {lr:.2e}"
-        )
-
-    pd.DataFrame(log_rows).to_csv(log_path, index=False)
-
-    backbone_ckpt = cfg.ckpt_dir / f"{cfg.exp_name}_backbone.pth"
-    torch.save(backbone.state_dict(), backbone_ckpt)
-    logger.info(f"FLYP backbone saved: {backbone_ckpt}")
-
-    return backbone.state_dict()
+    return _run_contrastive_loop(
+        cfg, backbone, projector, criterion, contrastive_loader, device,
+        eta_min=1e-7, log_name="flyp_log", loss_key="flyp_loss", desc="FLYP",
+    )

@@ -17,13 +17,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from src.config import IMAGENET_MEAN, IMAGENET_STD
+
 
 # ---------------------------------------------------------------------------
 # Preprocessing helpers
 # ---------------------------------------------------------------------------
-
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 def image_to_tensor(

@@ -8,7 +8,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.config import get_config
-from src.dataset import build_datasets, build_eyepacs_dataset, ContrastiveDRDataset
+from src.dataset import (
+    build_class_balanced_sampler,
+    build_datasets,
+    build_eyepacs_dataset,
+    ContrastiveDRDataset,
+)
 from src.transforms import get_train_transform, get_val_transform
 from src.train import run_training, evaluate_on_test, run_contrastive_pretraining, run_flyp_finetuning
 from src.pseudo_label import generate_pseudo_labels, finetune_with_pseudo
@@ -86,13 +91,7 @@ def main() -> None:
     sampler = None
     shuffle_train = True
     if cfg.use_weighted_sampler:
-        from torch.utils.data import WeightedRandomSampler
-        targets = [s[1] for s in train_ds.samples]
-        class_counts = [0] * 5
-        for t in targets:
-            class_counts[t] += 1
-        weights = [1.0 / class_counts[t] for t in targets]
-        sampler = WeightedRandomSampler(weights, num_samples=len(targets), replacement=True)
+        sampler, class_counts = build_class_balanced_sampler(train_ds.samples)
         shuffle_train = False
         logger.info(f"Using WeightedRandomSampler — class counts: {class_counts}")
 
@@ -127,21 +126,14 @@ def main() -> None:
             contrastive_ds = ContrastiveDRDataset(train_ds, transform_train)
             logger.info(f"Contrastive data: APTOS ({len(train_ds)} images)")
 
-        contrastive_sampler = None
-        contrastive_shuffle = True
-        from torch.utils.data import WeightedRandomSampler as WRS
-        c_targets = [s[1] for s in contrastive_ds.base_dataset.samples]
-        c_counts = [0] * 5
-        for t in c_targets:
-            c_counts[t] += 1
-        c_weights = [1.0 / c_counts[t] for t in c_targets]
-        contrastive_sampler = WRS(c_weights, num_samples=len(c_targets), replacement=True)
-        contrastive_shuffle = False
+        contrastive_sampler, c_counts = build_class_balanced_sampler(
+            contrastive_ds.base_dataset.samples
+        )
         logger.info(f"Contrastive WRS — class counts: {c_counts}")
 
         contrastive_loader = DataLoader(
             contrastive_ds, batch_size=cfg.batch_size,
-            shuffle=contrastive_shuffle, sampler=contrastive_sampler,
+            shuffle=False, sampler=contrastive_sampler,
             num_workers=args.workers, pin_memory=True,
         )
         pretrained_backbone_sd = run_contrastive_pretraining(cfg, contrastive_loader, device)
@@ -163,13 +155,9 @@ def main() -> None:
         logger.info(f"FLYP contrastive data: APTOS ({len(train_ds)} images)")
 
         if cfg.contrastive_stratified:
-            from torch.utils.data import WeightedRandomSampler as WRS
-            c_targets = [s[1] for s in contrastive_ds.base_dataset.samples]
-            c_counts = [0] * 5
-            for t in c_targets:
-                c_counts[t] += 1
-            c_weights = [1.0 / c_counts[t] for t in c_targets]
-            flyp_sampler = WRS(c_weights, num_samples=len(c_targets), replacement=True)
+            flyp_sampler, _c_counts = build_class_balanced_sampler(
+                contrastive_ds.base_dataset.samples
+            )
             flyp_batch = cfg.contrastive_batch_per_class * 5
             flyp_loader = DataLoader(
                 contrastive_ds, batch_size=flyp_batch,

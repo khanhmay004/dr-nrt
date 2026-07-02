@@ -17,7 +17,7 @@ from sklearn.metrics import (
     roc_auc_score, classification_report,
 )
 
-ROOT = Path(r"c:/Projects/dr-nrt")
+ROOT = Path(__file__).resolve().parents[1]
 RES = ROOT / "results"
 LABELS = pd.read_csv(ROOT / "data" / "test_label.csv")
 LABELS = LABELS.rename(columns={"diagnosis": "true_label_gt"})
